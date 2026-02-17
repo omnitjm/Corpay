@@ -1,4 +1,10 @@
 import { config } from '../config';
+import {
+  getAccountMapping,
+  getTaxCodeMapping,
+  getBankAccountConfig,
+  getSubsidiaryConfig,
+} from '../database/mapping-db';
 import type { CorpayOneInvoice, CorpayOnePayment } from '../types/corpayone';
 import type {
   NetSuiteVendorBill,
@@ -9,21 +15,99 @@ import type {
 /**
  * Maps CorpayOne invoices to NetSuite vendor bills and payments.
  *
- * CorpayOne invoices become NetSuite vendor bills (expense-based).
- * CorpayOne payments become NetSuite vendor payments applied against the bill.
+ * Uses the admin-configured mapping tables (account mappings, tax code mappings,
+ * bank account config, subsidiary config) to resolve the correct NetSuite
+ * GL accounts, tax codes, bank accounts, and subsidiaries - similar to
+ * how the Pleo NetSuite integration works.
+ *
+ * Fallback chain for accounts:
+ *   1. Dynamic mapping table (by CorpayOne account_code + subsidiary)
+ *   2. Default mapping (is_default = 1)
+ *   3. Static config (NETSUITE_AP_ACCOUNT_ID env var)
+ *
+ * Fallback chain for tax codes:
+ *   1. Dynamic mapping table (by VAT rate + subsidiary + country)
+ *   2. Default tax code mapping
+ *   3. No tax code (omitted from line)
+ *
+ * Fallback chain for bank accounts:
+ *   1. Dynamic mapping table (by currency + subsidiary)
+ *   2. Default bank account mapping
+ *   3. Static config (NETSUITE_BANK_ACCOUNT_ID env var)
+ *
+ * Fallback chain for subsidiaries:
+ *   1. Dynamic mapping table (by CorpayOne entity)
+ *   2. Default subsidiary mapping
+ *   3. Static config (NETSUITE_SUBSIDIARY_ID env var)
  */
+
+/** Resolve the NetSuite GL account ID for a CorpayOne line item */
+function resolveAccountId(accountCode?: string, subsidiaryId?: string): string {
+  if (accountCode) {
+    const mapping = getAccountMapping(accountCode, subsidiaryId);
+    if (mapping) return mapping.netsuite_account_id;
+  }
+
+  // Fall back to static config
+  return config.netsuite.apAccountId;
+}
+
+/** Resolve the NetSuite tax code for a CorpayOne VAT rate */
+function resolveTaxCode(
+  vatRate?: number,
+  subsidiaryId?: string,
+  countryCode?: string,
+): { id: string } | undefined {
+  if (vatRate === undefined || vatRate === null) return undefined;
+
+  const mapping = getTaxCodeMapping(vatRate, subsidiaryId, countryCode);
+  if (mapping) return { id: mapping.netsuite_tax_code_id };
+
+  return undefined;
+}
+
+/** Resolve the NetSuite subsidiary */
+function resolveSubsidiary(corpayone_entity_id?: string): { id: string } | undefined {
+  const mapping = getSubsidiaryConfig(corpayone_entity_id);
+  if (mapping) return { id: mapping.netsuite_subsidiary_id };
+
+  if (config.netsuite.subsidiaryId) {
+    return { id: config.netsuite.subsidiaryId };
+  }
+
+  return undefined;
+}
+
+/** Resolve the NetSuite bank account for payments */
+function resolveBankAccount(
+  currency?: string,
+  subsidiaryId?: string,
+): { id: string } | undefined {
+  const mapping = getBankAccountConfig(currency, subsidiaryId);
+  if (mapping) return { id: mapping.netsuite_bank_account_id };
+
+  if (config.netsuite.bankAccountId) {
+    return { id: config.netsuite.bankAccountId };
+  }
+
+  return undefined;
+}
 
 /** Map a CorpayOne invoice to a NetSuite vendor bill */
 export function mapInvoiceToVendorBill(
   invoice: CorpayOneInvoice,
   netsuiteVendorId: string,
 ): NetSuiteVendorBill {
+  const subsidiary = resolveSubsidiary();
+  const subsidiaryId = subsidiary?.id;
+  const vendorCountry = invoice.vendor?.address?.country;
+
   // Build expense lines from CorpayOne line items
   const expenseLines: NetSuiteExpenseLine[] = invoice.line_items.map((lineItem) => {
+    const accountId = resolveAccountId(lineItem.account_code, subsidiaryId);
+
     const line: NetSuiteExpenseLine = {
-      account: lineItem.account_code
-        ? { id: lineItem.account_code }
-        : { id: config.netsuite.apAccountId },
+      account: { id: accountId },
       amount: lineItem.amount,
     };
 
@@ -31,16 +115,38 @@ export function mapInvoiceToVendorBill(
       line.memo = lineItem.description;
     }
 
+    // Resolve tax code from the VAT rate on the line item
+    const taxCode = resolveTaxCode(lineItem.vat_rate, subsidiaryId, vendorCountry);
+    if (taxCode) {
+      line.taxCode = taxCode;
+    }
+    if (lineItem.vat_amount !== undefined) {
+      line.taxAmount = lineItem.vat_amount;
+    }
+
     return line;
   });
 
   // If no line items, create a single expense line with the total
   if (expenseLines.length === 0) {
-    expenseLines.push({
-      account: { id: config.netsuite.apAccountId },
+    const defaultAccountId = resolveAccountId(undefined, subsidiaryId);
+    const line: NetSuiteExpenseLine = {
+      account: { id: defaultAccountId },
       amount: invoice.total_amount,
       memo: invoice.description || `CorpayOne Invoice ${invoice.invoice_number || invoice.id}`,
-    });
+    };
+
+    // Try to resolve tax code from the invoice-level VAT
+    if (invoice.vat_amount && invoice.subtotal) {
+      const impliedRate = Math.round((invoice.vat_amount / invoice.subtotal) * 100);
+      const taxCode = resolveTaxCode(impliedRate, subsidiaryId, vendorCountry);
+      if (taxCode) {
+        line.taxCode = taxCode;
+        line.taxAmount = invoice.vat_amount;
+      }
+    }
+
+    expenseLines.push(line);
   }
 
   const vendorBill: NetSuiteVendorBill = {
@@ -65,9 +171,9 @@ export function mapInvoiceToVendorBill(
     vendorBill.tranId = invoice.invoice_number;
   }
 
-  // Set subsidiary if configured
-  if (config.netsuite.subsidiaryId) {
-    vendorBill.subsidiary = { id: config.netsuite.subsidiaryId };
+  // Set subsidiary from mapping configuration
+  if (subsidiary) {
+    vendorBill.subsidiary = subsidiary;
   }
 
   return vendorBill;
@@ -80,6 +186,9 @@ export function mapPaymentToVendorPayment(
   netsuiteVendorId: string,
   netsuiteVendorBillId: string,
 ): NetSuiteVendorPayment {
+  const subsidiary = resolveSubsidiary();
+  const bankAccount = resolveBankAccount(payment.currency, subsidiary?.id);
+
   const vendorPayment: NetSuiteVendorPayment = {
     entity: { id: netsuiteVendorId },
     externalId: `corpay-pay-${payment.id}`,
@@ -100,14 +209,14 @@ export function mapPaymentToVendorPayment(
     vendorPayment.tranDate = formatNetSuiteDate(payment.payment_date);
   }
 
-  // Set bank account if configured
-  if (config.netsuite.bankAccountId) {
-    vendorPayment.account = { id: config.netsuite.bankAccountId };
+  // Set bank account from mapping configuration
+  if (bankAccount) {
+    vendorPayment.account = bankAccount;
   }
 
-  // Set subsidiary if configured
-  if (config.netsuite.subsidiaryId) {
-    vendorPayment.subsidiary = { id: config.netsuite.subsidiaryId };
+  // Set subsidiary from mapping configuration
+  if (subsidiary) {
+    vendorPayment.subsidiary = subsidiary;
   }
 
   return vendorPayment;
@@ -133,7 +242,7 @@ function buildBillMemo(invoice: CorpayOneInvoice): string {
  * Format a date string to NetSuite's expected format (MM/DD/YYYY).
  * Accepts ISO date strings.
  */
-function formatNetSuiteDate(dateStr: string): string {
+export function formatNetSuiteDate(dateStr: string): string {
   const date = new Date(dateStr);
   const month = String(date.getMonth() + 1).padStart(2, '0');
   const day = String(date.getDate()).padStart(2, '0');
@@ -143,7 +252,6 @@ function formatNetSuiteDate(dateStr: string): string {
 
 /** Determine if a CorpayOne invoice status means it should be synced to NetSuite */
 export function isSyncableStatus(status: string): boolean {
-  // Only sync invoices that have been approved or are in a payment-related state
   const syncableStatuses = [
     'approved',
     'scheduled',

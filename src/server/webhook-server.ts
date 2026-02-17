@@ -5,6 +5,7 @@ import { logger } from '../logger';
 import { CorpayOneClient } from '../clients/corpayone-client';
 import { NetSuiteClient } from '../clients/netsuite-client';
 import { handleWebhookEvent } from '../services/webhook-handler';
+import { createConfigRouter } from './config-routes';
 import type { CorpayOneWebhookEvent } from '../types/corpayone';
 
 /**
@@ -82,6 +83,9 @@ export function createWebhookServer(
       res.status(500).json({ error: 'Internal server error' });
     }
   });
+
+  // Configuration dashboard API (account mappings, tax codes, bank accounts, subsidiaries)
+  app.use('/api/config', createConfigRouter());
 
   // Sync status endpoint
   app.get('/status', (_req, res) => {
