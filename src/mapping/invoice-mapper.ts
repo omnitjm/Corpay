@@ -19,24 +19,20 @@ import type {
  * CorpayOne is read-only — all mapping configuration lives in NetSuite
  * (via the Suitelet dashboard or the /api/config REST API).
  *
- * When an expense is booked in CorpayOne, it arrives with:
- *   - category (e.g. "IT Equipment", "Cloud Services")
- *   - account_code (e.g. "5010")
- *   - vat_rate (e.g. 25)
- *   - vat_amount (e.g. 1500.00)
+ * CorpayOne's API does NOT expose line-item detail — only invoice-level
+ * totals (subtotal, vat_amount, total_amount). Each invoice therefore
+ * maps to a single expense line in NetSuite.
  *
  * The admin configures the mapping in NetSuite to say:
- *   "IT Equipment" → NS Account 201
- *   25% DK         → NS Tax Code DK-S-25
- *   DKK            → NS Bank Account 152
+ *   category "IT Equipment" → NS Account 201
+ *   25% DK                  → NS Tax Code DK-S-25
+ *   DKK                     → NS Bank Account 152
  *
  * Fallback chain for GL accounts:
  *   1. Match by category + subsidiary
  *   2. Match by category (no subsidiary)
- *   3. Match by account_code + subsidiary
- *   4. Match by account_code (no subsidiary)
- *   5. Default mapping (is_default = 1)
- *   6. Static config (NETSUITE_AP_ACCOUNT_ID env var)
+ *   3. Default mapping (is_default = 1)
+ *   4. Static config (NETSUITE_AP_ACCOUNT_ID env var)
  *
  * Fallback chain for tax codes:
  *   1. Match by VAT rate + country + subsidiary
@@ -45,19 +41,17 @@ import type {
  *   4. Default tax code mapping
  *   5. No tax code (omitted — NetSuite uses its default)
  *
- * Tax amounts: The vat_amount from each CorpayOne line item is always
- * passed through to NetSuite as taxAmount on the expense line, regardless
- * of whether a tax code mapping was found. This ensures the tax figure
- * from the source invoice is preserved.
+ * Tax amounts: The vat_amount from the CorpayOne invoice is always
+ * passed through to NetSuite as taxAmount on the expense line,
+ * regardless of whether a tax code mapping was found.
  */
 
-/** Resolve the NetSuite GL account for a CorpayOne line item */
+/** Resolve the NetSuite GL account for a CorpayOne invoice */
 function resolveAccountId(
   category?: string,
-  accountCode?: string,
   subsidiaryId?: string,
 ): string {
-  const mapping = getAccountMapping(category, accountCode, subsidiaryId);
+  const mapping = getAccountMapping(category, undefined, subsidiaryId);
   if (mapping) return mapping.netsuite_account_id;
 
   return config.netsuite.apAccountId;
@@ -104,7 +98,12 @@ function resolveBankAccount(
   return undefined;
 }
 
-/** Map a CorpayOne invoice to a NetSuite vendor bill */
+/**
+ * Map a CorpayOne invoice to a NetSuite vendor bill.
+ *
+ * Always creates exactly ONE expense line using the invoice-level totals,
+ * because CorpayOne's API does not expose line-item detail.
+ */
 export function mapInvoiceToVendorBill(
   invoice: CorpayOneInvoice,
   netsuiteVendorId: string,
@@ -113,63 +112,30 @@ export function mapInvoiceToVendorBill(
   const subsidiaryId = subsidiary?.id;
   const vendorCountry = invoice.vendor?.address?.country;
 
-  // Build expense lines from CorpayOne line items
-  const expenseLines: NetSuiteExpenseLine[] = invoice.line_items.map((lineItem) => {
-    // Resolve GL account: category first, then account_code as fallback
-    const accountId = resolveAccountId(lineItem.category, lineItem.account_code, subsidiaryId);
+  // Single expense line from invoice-level totals
+  const accountId = resolveAccountId(invoice.category, subsidiaryId);
 
-    const line: NetSuiteExpenseLine = {
-      account: { id: accountId },
-      amount: lineItem.amount,
-    };
+  const line: NetSuiteExpenseLine = {
+    account: { id: accountId },
+    amount: invoice.subtotal,
+    memo: invoice.description || `CorpayOne Invoice ${invoice.invoice_number || invoice.id}`,
+  };
 
-    if (lineItem.description) {
-      line.memo = lineItem.description;
-    }
-
-    // Resolve tax code from the VAT rate on the line item
-    const taxCode = resolveTaxCode(lineItem.vat_rate, subsidiaryId, vendorCountry);
+  // Resolve tax code from the invoice-level VAT
+  if (invoice.vat_amount && invoice.subtotal) {
+    const impliedRate = Math.round((invoice.vat_amount / invoice.subtotal) * 100);
+    const taxCode = resolveTaxCode(impliedRate, subsidiaryId, vendorCountry);
     if (taxCode) {
       line.taxCode = taxCode;
     }
-
-    // Always pass through the tax amount from CorpayOne so the
-    // invoice-level VAT is preserved in NetSuite
-    if (lineItem.vat_amount !== undefined && lineItem.vat_amount !== null) {
-      line.taxAmount = lineItem.vat_amount;
-    }
-
-    return line;
-  });
-
-  // If no line items, create a single expense line with the total
-  if (expenseLines.length === 0) {
-    const defaultAccountId = resolveAccountId(undefined, undefined, subsidiaryId);
-    const line: NetSuiteExpenseLine = {
-      account: { id: defaultAccountId },
-      amount: invoice.total_amount,
-      memo: invoice.description || `CorpayOne Invoice ${invoice.invoice_number || invoice.id}`,
-    };
-
-    // Try to resolve tax code from the invoice-level VAT
-    if (invoice.vat_amount && invoice.subtotal) {
-      const impliedRate = Math.round((invoice.vat_amount / invoice.subtotal) * 100);
-      const taxCode = resolveTaxCode(impliedRate, subsidiaryId, vendorCountry);
-      if (taxCode) {
-        line.taxCode = taxCode;
-      }
-      // Always pass through the tax amount
-      line.taxAmount = invoice.vat_amount;
-    }
-
-    expenseLines.push(line);
+    line.taxAmount = invoice.vat_amount;
   }
 
   const vendorBill: NetSuiteVendorBill = {
     entity: { id: netsuiteVendorId },
     externalId: `corpay-${invoice.id}`,
     memo: buildBillMemo(invoice),
-    expense: { items: expenseLines },
+    expense: { items: [line] },
   };
 
   if (invoice.invoice_date) {

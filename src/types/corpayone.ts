@@ -31,19 +31,6 @@ export interface CorpayOneVendor {
   updated_at: string;
 }
 
-/** CorpayOne invoice/bill line item */
-export interface CorpayOneLineItem {
-  id: string;
-  description?: string;
-  quantity?: number;
-  unit_price?: number;
-  amount: number;
-  vat_amount?: number;
-  vat_rate?: number;
-  account_code?: string;
-  category?: string;
-}
-
 /** CorpayOne invoice/bill status */
 export type CorpayOneInvoiceStatus =
   | 'draft'
@@ -57,7 +44,13 @@ export type CorpayOneInvoiceStatus =
   | 'cancelled'
   | 'voided';
 
-/** CorpayOne invoice/bill (vendor bill) */
+/**
+ * CorpayOne invoice/bill (vendor bill).
+ *
+ * Note: CorpayOne's API only exposes invoice-level totals.
+ * There is no line-item detail — each invoice maps to a single
+ * expense line in NetSuite.
+ */
 export interface CorpayOneInvoice {
   id: string;
   invoice_number?: string;
@@ -73,7 +66,8 @@ export interface CorpayOneInvoice {
   description?: string;
   reference?: string;
   po_number?: string;
-  line_items: CorpayOneLineItem[];
+  /** Expense category (e.g. "IT Equipment", "Cloud Services") — used for GL account mapping */
+  category?: string;
   attachments?: Array<{
     id: string;
     filename: string;
