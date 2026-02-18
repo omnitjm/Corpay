@@ -180,7 +180,7 @@ export function getPaymentsForInvoice(corpayone_invoice_id: string): SyncedPayme
 
 // --- Sync run operations ---
 
-export function createSyncRun(sync_type: 'full' | 'incremental' | 'webhook'): number {
+export function createSyncRun(sync_type: 'full' | 'incremental'): number {
   const database = getDatabase();
   const result = database
     .prepare("INSERT INTO sync_runs (sync_type, started_at) VALUES (?, datetime('now'))")

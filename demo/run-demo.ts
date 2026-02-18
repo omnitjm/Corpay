@@ -405,81 +405,9 @@ async function runDemo() {
   stepEnd();
   await sleep(500);
 
-  // ── Step 6: Webhook simulation ─────────────────────────────────
+  // ── Step 6: Final status ───────────────────────────────────────
 
-  step(6, 'Handle Real-Time Webhook Event');
-  info('Simulating a webhook from CorpayOne: invoice.approved\n');
-
-  await sleep(300);
-
-  const webhookEvent = {
-    id: 'evt-9001',
-    type: 'invoice.approved',
-    data: {
-      invoice_id: 'inv-1005',
-    },
-    created_at: new Date().toISOString(),
-  };
-
-  json('Webhook payload', webhookEvent);
-
-  await sleep(200);
-  info('\nProcessing webhook event...');
-
-  // Simulate the new invoice that the webhook is about
-  const newInvoice: CorpayOneInvoice = {
-    id: 'inv-1005',
-    invoice_number: 'TS-2025-0099',
-    vendor: vendors['vendor-001'],
-    status: 'approved',
-    currency: 'DKK',
-    subtotal: 4000,
-    vat_amount: 1000,
-    total_amount: 5000,
-    due_date: '2025-04-01T00:00:00Z',
-    invoice_date: '2025-03-20T00:00:00Z',
-    description: 'Additional monitors for dev team',
-    line_items: [
-      {
-        id: 'li-10',
-        description: 'LG 27" 4K Monitor',
-        quantity: 4,
-        unit_price: 1000,
-        amount: 4000,
-        vat_amount: 1000,
-        vat_rate: 25,
-        account_code: '5010',
-        category: 'IT Equipment',
-      },
-    ],
-    created_at: '2025-03-20T11:00:00Z',
-    updated_at: '2025-03-20T11:30:00Z',
-  };
-
-  info(`Fetching invoice ${newInvoice.id} from CorpayOne...`);
-  await sleep(200);
-
-  const nsVendorId = vendorMap[newInvoice.vendor.id]; // Already exists
-  const bill = mapInvoiceToVendorBill(newInvoice, nsVendorId);
-  const nsBillId = mockCreateBill(bill);
-
-  success(`Webhook processed: ${newInvoice.id} (${newInvoice.invoice_number}) → NS Bill #${nsBillId}`);
-  if (bill.expense?.items[0]) {
-    const line = bill.expense.items[0];
-    const acctName = (netsuiteAccounts as Record<string, { name: string }>)[line.account.id]?.name || line.account.id;
-    const taxCodeName = line.taxCode
-      ? (netsuiteTaxCodes as Record<string, { name: string }>)[line.taxCode.id]?.name || line.taxCode.id
-      : 'none';
-    const taxAmtStr = line.taxAmount !== undefined ? `${line.taxAmount}` : '-';
-    info(`    → Account: ${acctName} | Net: ${line.amount} | ${BOLD}VAT: ${taxAmtStr}${RESET} | Tax Code: ${taxCodeName}`);
-  }
-
-  stepEnd();
-  await sleep(500);
-
-  // ── Step 7: Final status ───────────────────────────────────────
-
-  step(7, 'Final Sync Status');
+  step(6, 'Final Sync Status');
   info('Summary of all records synced:\n');
 
   info(`${BOLD}NetSuite Vendors:${RESET}`);
@@ -529,10 +457,9 @@ async function runDemo() {
   banner('Demo Complete!');
   console.log(`  ${GREEN}${BOLD}All integration steps executed successfully.${RESET}\n`);
   console.log(`  ${DIM}In production, this same flow runs automatically via:${RESET}`);
-  console.log(`    ${CYAN}•${RESET} Scheduled sync every 15 minutes (configurable)`);
-  console.log(`    ${CYAN}•${RESET} Real-time webhooks from CorpayOne`);
-  console.log(`    ${CYAN}•${RESET} NetSuite Suitelet dashboard for mapping configuration`);
-  console.log(`    ${CYAN}•${RESET} REST API at /api/config/* for programmatic access\n`);
+  console.log(`    ${CYAN}•${RESET} Azure Function: scheduled sync every 15 minutes`);
+  console.log(`    ${CYAN}•${RESET} Pull-based only — no incoming traffic, no open endpoints`);
+  console.log(`    ${CYAN}•${RESET} NetSuite Suitelet dashboard for mapping configuration\n`);
 }
 
 // ─── Run ───────────────────────────────────────────────────────────

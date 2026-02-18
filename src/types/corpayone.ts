@@ -111,23 +111,3 @@ export interface CorpayOnePaginatedResponse<T> {
     total_pages: number;
   };
 }
-
-/** CorpayOne webhook event */
-export interface CorpayOneWebhookEvent {
-  id: string;
-  type: CorpayOneWebhookEventType;
-  data: Record<string, unknown>;
-  created_at: string;
-}
-
-export type CorpayOneWebhookEventType =
-  | 'invoice.created'
-  | 'invoice.updated'
-  | 'invoice.approved'
-  | 'invoice.rejected'
-  | 'invoice.deleted'
-  | 'payment.created'
-  | 'payment.completed'
-  | 'payment.failed'
-  | 'expense.submitted'
-  | 'expense.approved';

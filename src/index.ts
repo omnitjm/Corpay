@@ -2,7 +2,6 @@ import { config } from './config';
 import { logger } from './logger';
 import { CorpayOneClient } from './clients/corpayone-client';
 import { NetSuiteClient } from './clients/netsuite-client';
-import { startWebhookServer } from './server/webhook-server';
 import { startScheduler, runFullSync, runScheduledSync } from './services/scheduler';
 import { getDatabase, closeDatabase } from './database/db';
 
@@ -10,9 +9,10 @@ import { getDatabase, closeDatabase } from './database/db';
  * CorpayOne → NetSuite Integration
  *
  * Synchronizes vendor bills and payments from CorpayOne to NetSuite.
+ * One-way, pull-based: only outgoing HTTPS calls, no incoming traffic.
  *
  * Modes:
- *   - "server" (default): Runs webhook server + scheduled sync
+ *   - "server" (default): Runs scheduled sync on a timer
  *   - "sync":    Runs a single incremental sync and exits
  *   - "full":    Runs a full sync (all data) and exits
  */
@@ -30,18 +30,12 @@ async function main(): Promise<void> {
 
   switch (mode) {
     case 'server': {
-      // Start webhook server for real-time events
-      startWebhookServer(corpayClient, netsuiteClient);
-
       // Start scheduled sync for periodic reconciliation
       const scheduler = startScheduler(corpayClient, netsuiteClient);
 
       logger.info(
-        {
-          webhookPort: config.webhook.port,
-          syncIntervalMinutes: config.sync.intervalMinutes,
-        },
-        'Integration running: webhook server + scheduled sync',
+        { syncIntervalMinutes: config.sync.intervalMinutes },
+        'Integration running: scheduled sync every N minutes',
       );
 
       // Run an initial sync on startup

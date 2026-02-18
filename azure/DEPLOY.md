@@ -4,9 +4,10 @@
 
 Integrationen kører som Azure Functions med:
 - **Timer-trigger** → synkroniserer hvert 15. minut (scheduled sync)
-- **HTTP-trigger** → modtager webhooks fra CorpayOne (valgfrit)
 - **Health endpoint** → tjek om funktionen kører
 - **Manual sync** → trigger sync manuelt via HTTP
+
+Ingen indgående trafik. Kun udgående HTTPS-kald til CorpayOne og NetSuite.
 
 ## Forudsætninger
 
@@ -52,7 +53,6 @@ az functionapp config appsettings set \
     CORPAYONE_API_BASE_URL="https://api.corpayone.com" \
     CORPAYONE_CLIENT_ID="<dit-client-id>" \
     CORPAYONE_CLIENT_SECRET="<dit-client-secret>" \
-    CORPAYONE_WEBHOOK_SECRET="<din-webhook-secret>" \
     NETSUITE_ACCOUNT_ID="<dit-netsuite-account-id>" \
     NETSUITE_CONSUMER_KEY="<din-consumer-key>" \
     NETSUITE_CONSUMER_SECRET="<din-consumer-secret>" \
@@ -90,18 +90,19 @@ curl https://corpayone-netsuite-sync.azurewebsites.net/api/health
 curl -X POST "https://corpayone-netsuite-sync.azurewebsites.net/api/sync?code=<din-function-key>"
 ```
 
-## Webhook URL (giv denne til CorpayOne)
+## Sikkerhed
 
-```
-https://corpayone-netsuite-sync.azurewebsites.net/api/webhooks/corpayone
-```
+- **Ingen åbne endpoints** — kun udgående HTTPS-kald
+- **Ingen webhook-URL** — ingen angrebsflade
+- API-nøgler opbevares som Azure Application Settings (krypteret)
+- Function-level auth key kræves for manuel sync-trigger
 
 ## Pris
 
 Med Azure Functions Consumption Plan:
 - Første 1 million kald/måned: **gratis**
 - 400.000 GB-s compute/måned: **gratis**
-- Ved ~100 syncs/dag (96 timer-triggers + webhooks): **0 kr/måned**
+- Ved 96 timer-triggers/dag: **0 kr/måned**
 
 ## Logs
 

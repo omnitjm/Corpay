@@ -47,7 +47,7 @@ export interface SyncedVendor {
 /** Sync run log entry */
 export interface SyncRun {
   id: number;
-  sync_type: 'full' | 'incremental' | 'webhook';
+  sync_type: 'full' | 'incremental';
   started_at: string;
   completed_at: string | null;
   bills_processed: number;

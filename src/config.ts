@@ -19,7 +19,6 @@ export const config = {
     apiBaseUrl: optional('CORPAYONE_API_BASE_URL', 'https://api.corpayone.com'),
     clientId: required('CORPAYONE_CLIENT_ID'),
     clientSecret: required('CORPAYONE_CLIENT_SECRET'),
-    webhookSecret: optional('CORPAYONE_WEBHOOK_SECRET', ''),
   },
   netsuite: {
     accountId: required('NETSUITE_ACCOUNT_ID'),
@@ -34,10 +33,6 @@ export const config = {
   sync: {
     intervalMinutes: parseInt(optional('SYNC_INTERVAL_MINUTES', '15'), 10),
     lookbackHours: parseInt(optional('SYNC_LOOKBACK_HOURS', '24'), 10),
-  },
-  webhook: {
-    port: parseInt(optional('WEBHOOK_PORT', '3000'), 10),
-    host: optional('WEBHOOK_HOST', '0.0.0.0'),
   },
   database: {
     path: optional('DATABASE_PATH', './data/sync.db'),
