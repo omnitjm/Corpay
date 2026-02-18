@@ -5,7 +5,7 @@
  * for configuring the CorpayOne integration. Similar to the Pleo NetSuite
  * SuiteApp dashboard, it allows admins to:
  *
- *   1. Map CorpayOne account codes to NetSuite GL accounts
+ *   1. Map CorpayOne expense categories to NetSuite GL accounts
  *   2. Map CorpayOne VAT rates to NetSuite tax codes
  *   3. Select which bank account to use for CorpayOne payments
  *   4. Choose which subsidiary transactions should book into
@@ -87,19 +87,19 @@ define([
     var accountSublist = form.addSublist({
       id: 'custpage_account_list',
       type: serverWidget.SublistType.INLINEEDITOR,
-      label: 'CorpayOne Account Code → NetSuite GL Account',
+      label: 'CorpayOne Category → NetSuite GL Account',
       tab: 'custpage_tab_accounts',
     });
 
     accountSublist.addField({
-      id: 'custpage_acct_corpay_code',
+      id: 'custpage_acct_corpay_category',
       type: serverWidget.FieldType.TEXT,
-      label: 'CorpayOne Account Code',
+      label: 'CorpayOne Category',
     });
     accountSublist.addField({
-      id: 'custpage_acct_corpay_label',
+      id: 'custpage_acct_corpay_code',
       type: serverWidget.FieldType.TEXT,
-      label: 'CorpayOne Label',
+      label: 'Account Code (optional)',
     });
     accountSublist.addField({
       id: 'custpage_acct_ns_account',
@@ -290,12 +290,12 @@ define([
       var acctCount = request.getLineCount({ group: 'custpage_account_list' });
       var accounts = [];
       for (var j = 0; j < acctCount; j++) {
-        var code = request.getSublistValue({ group: 'custpage_account_list', name: 'custpage_acct_corpay_code', line: j });
+        var category = request.getSublistValue({ group: 'custpage_account_list', name: 'custpage_acct_corpay_category', line: j });
         var nsAcct = request.getSublistValue({ group: 'custpage_account_list', name: 'custpage_acct_ns_account', line: j });
-        if (!code || !nsAcct) continue;
+        if (!category || !nsAcct) continue;
         accounts.push({
-          corpayone_account_code: code,
-          corpayone_label: request.getSublistValue({ group: 'custpage_account_list', name: 'custpage_acct_corpay_label', line: j }) || undefined,
+          corpayone_category: category,
+          corpayone_account_code: request.getSublistValue({ group: 'custpage_account_list', name: 'custpage_acct_corpay_code', line: j }) || undefined,
           netsuite_account_id: nsAcct,
           netsuite_account_name: getAccountName(nsAcct),
           subsidiary_id: request.getSublistValue({ group: 'custpage_account_list', name: 'custpage_acct_subsidiary', line: j }) || undefined,
@@ -395,8 +395,8 @@ define([
 
   function populateAccountMappings(sublist, data) {
     for (var i = 0; i < data.length; i++) {
+      sublist.setSublistValue({ id: 'custpage_acct_corpay_category', line: i, value: data[i].corpayone_category || '' });
       sublist.setSublistValue({ id: 'custpage_acct_corpay_code', line: i, value: data[i].corpayone_account_code || '' });
-      sublist.setSublistValue({ id: 'custpage_acct_corpay_label', line: i, value: data[i].corpayone_label || '' });
       sublist.setSublistValue({ id: 'custpage_acct_ns_account', line: i, value: data[i].netsuite_account_id || '' });
       if (data[i].subsidiary_id) {
         sublist.setSublistValue({ id: 'custpage_acct_subsidiary', line: i, value: data[i].subsidiary_id });

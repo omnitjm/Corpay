@@ -1,27 +1,34 @@
 /**
  * Database schema for the NetSuite mapping configuration.
  *
- * These tables store the user-configured mappings between CorpayOne
- * categories/tax rates and NetSuite accounts/tax codes, similar to
- * how Pleo's NetSuite integration lets admins map accounts, tax codes,
- * bank accounts, and subsidiaries from within NetSuite.
+ * All configuration is managed from NetSuite (via the Suitelet dashboard
+ * or the REST API). Nothing is pushed back to CorpayOne — it is read-only.
+ *
+ * The mapping tables translate data that arrives from CorpayOne
+ * (categories, VAT rates, currencies) into the correct NetSuite
+ * GL accounts, tax codes, bank accounts, and subsidiaries.
  */
 export const MAPPING_SCHEMA_SQL = `
-  -- Maps CorpayOne account codes / categories to NetSuite GL accounts
+  -- Maps CorpayOne expense categories to NetSuite GL accounts.
+  -- When an expense is booked in CorpayOne under a category (e.g. "IT Equipment"),
+  -- this table determines which NetSuite GL account it should post to.
+  -- Also supports matching by account_code for backwards compatibility.
   CREATE TABLE IF NOT EXISTS account_mappings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    corpayone_account_code TEXT NOT NULL,
-    corpayone_label TEXT,
+    corpayone_category TEXT NOT NULL,
+    corpayone_account_code TEXT,
     netsuite_account_id TEXT NOT NULL,
     netsuite_account_name TEXT,
     subsidiary_id TEXT,
     is_default INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-    UNIQUE(corpayone_account_code, subsidiary_id)
+    UNIQUE(corpayone_category, subsidiary_id)
   );
 
-  -- Maps CorpayOne VAT rates to NetSuite tax codes
+  -- Maps CorpayOne VAT rates to NetSuite tax codes.
+  -- When an invoice line has e.g. 25% VAT from a Danish vendor,
+  -- this table resolves it to the correct NetSuite tax code.
   CREATE TABLE IF NOT EXISTS tax_code_mappings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     corpayone_vat_rate REAL NOT NULL,
@@ -36,7 +43,8 @@ export const MAPPING_SCHEMA_SQL = `
     UNIQUE(corpayone_vat_rate, subsidiary_id, country_code)
   );
 
-  -- Configures which NetSuite bank account to use for CorpayOne payments
+  -- Configures which NetSuite bank account to use per currency.
+  -- When a payment comes through in EUR, this determines the bank account.
   CREATE TABLE IF NOT EXISTS bank_account_config (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     netsuite_bank_account_id TEXT NOT NULL,
@@ -49,7 +57,7 @@ export const MAPPING_SCHEMA_SQL = `
     UNIQUE(currency, subsidiary_id)
   );
 
-  -- Configures which NetSuite subsidiary CorpayOne transactions book into
+  -- Configures which NetSuite subsidiary CorpayOne transactions book into.
   CREATE TABLE IF NOT EXISTS subsidiary_config (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     netsuite_subsidiary_id TEXT NOT NULL,
@@ -68,6 +76,7 @@ export const MAPPING_SCHEMA_SQL = `
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
+  CREATE INDEX IF NOT EXISTS idx_account_mappings_category ON account_mappings(corpayone_category);
   CREATE INDEX IF NOT EXISTS idx_account_mappings_code ON account_mappings(corpayone_account_code);
   CREATE INDEX IF NOT EXISTS idx_tax_code_mappings_rate ON tax_code_mappings(corpayone_vat_rate);
   CREATE INDEX IF NOT EXISTS idx_bank_account_config_currency ON bank_account_config(currency);

@@ -15,40 +15,51 @@ import type {
 /**
  * Maps CorpayOne invoices to NetSuite vendor bills and payments.
  *
- * Uses the admin-configured mapping tables (account mappings, tax code mappings,
- * bank account config, subsidiary config) to resolve the correct NetSuite
- * GL accounts, tax codes, bank accounts, and subsidiaries - similar to
- * how the Pleo NetSuite integration works.
+ * This is a ONE-WAY sync: CorpayOne → NetSuite only.
+ * CorpayOne is read-only — all mapping configuration lives in NetSuite
+ * (via the Suitelet dashboard or the /api/config REST API).
  *
- * Fallback chain for accounts:
- *   1. Dynamic mapping table (by CorpayOne account_code + subsidiary)
- *   2. Default mapping (is_default = 1)
- *   3. Static config (NETSUITE_AP_ACCOUNT_ID env var)
+ * When an expense is booked in CorpayOne, it arrives with:
+ *   - category (e.g. "IT Equipment", "Cloud Services")
+ *   - account_code (e.g. "5010")
+ *   - vat_rate (e.g. 25)
+ *   - vat_amount (e.g. 1500.00)
+ *
+ * The admin configures the mapping in NetSuite to say:
+ *   "IT Equipment" → NS Account 201
+ *   25% DK         → NS Tax Code DK-S-25
+ *   DKK            → NS Bank Account 152
+ *
+ * Fallback chain for GL accounts:
+ *   1. Match by category + subsidiary
+ *   2. Match by category (no subsidiary)
+ *   3. Match by account_code + subsidiary
+ *   4. Match by account_code (no subsidiary)
+ *   5. Default mapping (is_default = 1)
+ *   6. Static config (NETSUITE_AP_ACCOUNT_ID env var)
  *
  * Fallback chain for tax codes:
- *   1. Dynamic mapping table (by VAT rate + subsidiary + country)
- *   2. Default tax code mapping
- *   3. No tax code (omitted from line)
+ *   1. Match by VAT rate + country + subsidiary
+ *   2. Match by VAT rate + country
+ *   3. Match by VAT rate only
+ *   4. Default tax code mapping
+ *   5. No tax code (omitted — NetSuite uses its default)
  *
- * Fallback chain for bank accounts:
- *   1. Dynamic mapping table (by currency + subsidiary)
- *   2. Default bank account mapping
- *   3. Static config (NETSUITE_BANK_ACCOUNT_ID env var)
- *
- * Fallback chain for subsidiaries:
- *   1. Dynamic mapping table (by CorpayOne entity)
- *   2. Default subsidiary mapping
- *   3. Static config (NETSUITE_SUBSIDIARY_ID env var)
+ * Tax amounts: The vat_amount from each CorpayOne line item is always
+ * passed through to NetSuite as taxAmount on the expense line, regardless
+ * of whether a tax code mapping was found. This ensures the tax figure
+ * from the source invoice is preserved.
  */
 
-/** Resolve the NetSuite GL account ID for a CorpayOne line item */
-function resolveAccountId(accountCode?: string, subsidiaryId?: string): string {
-  if (accountCode) {
-    const mapping = getAccountMapping(accountCode, subsidiaryId);
-    if (mapping) return mapping.netsuite_account_id;
-  }
+/** Resolve the NetSuite GL account for a CorpayOne line item */
+function resolveAccountId(
+  category?: string,
+  accountCode?: string,
+  subsidiaryId?: string,
+): string {
+  const mapping = getAccountMapping(category, accountCode, subsidiaryId);
+  if (mapping) return mapping.netsuite_account_id;
 
-  // Fall back to static config
   return config.netsuite.apAccountId;
 }
 
@@ -104,7 +115,8 @@ export function mapInvoiceToVendorBill(
 
   // Build expense lines from CorpayOne line items
   const expenseLines: NetSuiteExpenseLine[] = invoice.line_items.map((lineItem) => {
-    const accountId = resolveAccountId(lineItem.account_code, subsidiaryId);
+    // Resolve GL account: category first, then account_code as fallback
+    const accountId = resolveAccountId(lineItem.category, lineItem.account_code, subsidiaryId);
 
     const line: NetSuiteExpenseLine = {
       account: { id: accountId },
@@ -120,7 +132,10 @@ export function mapInvoiceToVendorBill(
     if (taxCode) {
       line.taxCode = taxCode;
     }
-    if (lineItem.vat_amount !== undefined) {
+
+    // Always pass through the tax amount from CorpayOne so the
+    // invoice-level VAT is preserved in NetSuite
+    if (lineItem.vat_amount !== undefined && lineItem.vat_amount !== null) {
       line.taxAmount = lineItem.vat_amount;
     }
 
@@ -129,7 +144,7 @@ export function mapInvoiceToVendorBill(
 
   // If no line items, create a single expense line with the total
   if (expenseLines.length === 0) {
-    const defaultAccountId = resolveAccountId(undefined, subsidiaryId);
+    const defaultAccountId = resolveAccountId(undefined, undefined, subsidiaryId);
     const line: NetSuiteExpenseLine = {
       account: { id: defaultAccountId },
       amount: invoice.total_amount,
@@ -142,8 +157,9 @@ export function mapInvoiceToVendorBill(
       const taxCode = resolveTaxCode(impliedRate, subsidiaryId, vendorCountry);
       if (taxCode) {
         line.taxCode = taxCode;
-        line.taxAmount = invoice.vat_amount;
       }
+      // Always pass through the tax amount
+      line.taxAmount = invoice.vat_amount;
     }
 
     expenseLines.push(line);
@@ -156,22 +172,18 @@ export function mapInvoiceToVendorBill(
     expense: { items: expenseLines },
   };
 
-  // Set transaction date from invoice date
   if (invoice.invoice_date) {
     vendorBill.tranDate = formatNetSuiteDate(invoice.invoice_date);
   }
 
-  // Set due date
   if (invoice.due_date) {
     vendorBill.dueDate = formatNetSuiteDate(invoice.due_date);
   }
 
-  // Set transaction reference number
   if (invoice.invoice_number) {
     vendorBill.tranId = invoice.invoice_number;
   }
 
-  // Set subsidiary from mapping configuration
   if (subsidiary) {
     vendorBill.subsidiary = subsidiary;
   }
@@ -204,17 +216,14 @@ export function mapPaymentToVendorPayment(
     },
   };
 
-  // Set payment date
   if (payment.payment_date) {
     vendorPayment.tranDate = formatNetSuiteDate(payment.payment_date);
   }
 
-  // Set bank account from mapping configuration
   if (bankAccount) {
     vendorPayment.account = bankAccount;
   }
 
-  // Set subsidiary from mapping configuration
   if (subsidiary) {
     vendorPayment.subsidiary = subsidiary;
   }

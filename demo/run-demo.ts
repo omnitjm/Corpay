@@ -195,9 +195,11 @@ async function runDemo() {
 
   // ── Step 1: Configure mapping ──────────────────────────────────
 
-  step(1, 'Configure Mapping (NetSuite Dashboard)');
-  info('An admin opens the CorpayOne Configuration Suitelet in NetSuite');
-  info('and maps accounts, tax codes, bank accounts, and subsidiaries.\n');
+  step(1, 'Configure Mapping in NetSuite (one-way: CorpayOne → NetSuite)');
+  info('An admin opens the CorpayOne Configuration Suitelet in NetSuite.');
+  info(`${BOLD}Nothing is configured in CorpayOne${RESET} — it is read-only.`);
+  info('The admin maps CorpayOne expense categories to NetSuite GL accounts,');
+  info('CorpayOne VAT rates to NetSuite tax codes, and selects bank accounts.\n');
 
   info(`${BOLD}Configuring subsidiary...${RESET}`);
   upsertSubsidiaryConfig({
@@ -209,17 +211,18 @@ async function runDemo() {
 
   await sleep(200);
 
-  info(`\n${BOLD}Configuring account mappings...${RESET}`);
+  info(`\n${BOLD}Mapping CorpayOne categories → NetSuite GL accounts...${RESET}`);
+  info(`These categories come from CorpayOne invoice line items automatically.\n`);
   const accountMaps = [
-    { corpayone_account_code: '5010', corpayone_label: 'IT Equipment', netsuite_account_id: '201', netsuite_account_name: 'IT Equipment' },
-    { corpayone_account_code: '5020', corpayone_label: 'Office Supplies', netsuite_account_id: '202', netsuite_account_name: 'Office Supplies' },
-    { corpayone_account_code: '5030', corpayone_label: 'Office Furniture', netsuite_account_id: '203', netsuite_account_name: 'Office Furniture' },
-    { corpayone_account_code: '6100', corpayone_label: 'Cloud Services', netsuite_account_id: '301', netsuite_account_name: 'Cloud & Hosting Services' },
-    { corpayone_account_code: 'DEFAULT', corpayone_label: 'Default AP', netsuite_account_id: '400', netsuite_account_name: 'Accounts Payable', is_default: true },
+    { corpayone_category: 'IT Equipment', corpayone_account_code: '5010', netsuite_account_id: '201', netsuite_account_name: 'IT Equipment' },
+    { corpayone_category: 'Office Supplies', corpayone_account_code: '5020', netsuite_account_id: '202', netsuite_account_name: 'Office Supplies' },
+    { corpayone_category: 'Office Furniture', corpayone_account_code: '5030', netsuite_account_id: '203', netsuite_account_name: 'Office Furniture' },
+    { corpayone_category: 'Cloud Services', corpayone_account_code: '6100', netsuite_account_id: '301', netsuite_account_name: 'Cloud & Hosting Services' },
+    { corpayone_category: 'Default', netsuite_account_id: '400', netsuite_account_name: 'Accounts Payable', is_default: true },
   ];
   for (const m of accountMaps) {
     upsertAccountMapping(m);
-    success(`${m.corpayone_label} (${m.corpayone_account_code}) → NS: ${m.netsuite_account_name} (${m.netsuite_account_id})${m.is_default ? ' [DEFAULT]' : ''}`);
+    success(`"${m.corpayone_category}" → NS: ${m.netsuite_account_name} (${m.netsuite_account_id})${m.is_default ? ' [DEFAULT]' : ''}`);
   }
 
   await sleep(200);
@@ -253,8 +256,8 @@ async function runDemo() {
 
   // ── Step 2: Fetch invoices from CorpayOne ──────────────────────
 
-  step(2, 'Fetch Invoices from CorpayOne API');
-  info(`Calling GET /v1/invoices ... (mock response)\n`);
+  step(2, 'Fetch Invoices from CorpayOne (read-only)');
+  info(`Calling GET /v1/invoices ... (CorpayOne is only read, never written to)\n`);
 
   await sleep(300);
 
@@ -264,8 +267,9 @@ async function runDemo() {
       Number: inv.invoice_number || '-',
       Vendor: inv.vendor.name,
       Status: inv.status,
-      Amount: `${inv.total_amount} ${inv.currency}`,
-      Lines: String(inv.line_items.length),
+      'Net': `${inv.subtotal} ${inv.currency}`,
+      'VAT': `${inv.vat_amount} ${inv.currency}`,
+      'Total': `${inv.total_amount} ${inv.currency}`,
     })),
   );
 
@@ -325,15 +329,19 @@ async function runDemo() {
 
     success(`${inv.id} (${inv.invoice_number}) → NS Vendor Bill #${nsBillId}`);
 
-    // Show the mapped expense lines
+    // Show the mapped expense lines with tax amounts
     if (bill.expense?.items) {
       for (const line of bill.expense.items) {
         const acctName = (netsuiteAccounts as Record<string, { name: string }>)[line.account.id]?.name || line.account.id;
-        const taxInfo = line.taxCode
-          ? ` | Tax: ${(netsuiteTaxCodes as Record<string, { name: string }>)[line.taxCode.id]?.name || line.taxCode.id}`
-          : '';
-        info(`    → Account: ${acctName} (${line.account.id}) | Amount: ${line.amount}${taxInfo}`);
+        const taxCodeName = line.taxCode
+          ? (netsuiteTaxCodes as Record<string, { name: string }>)[line.taxCode.id]?.name || line.taxCode.id
+          : 'none';
+        const taxAmtStr = line.taxAmount !== undefined ? `${line.taxAmount}` : '-';
+        info(`    → Account: ${acctName} (${line.account.id}) | Net: ${line.amount} | ${BOLD}VAT: ${taxAmtStr}${RESET} | Tax Code: ${taxCodeName}`);
       }
+      const totalNet = bill.expense.items.reduce((s, l) => s + l.amount, 0);
+      const totalVat = bill.expense.items.reduce((s, l) => s + (l.taxAmount || 0), 0);
+      info(`    ${DIM}── Total Net: ${totalNet} | Total VAT: ${totalVat} | Grand Total: ${totalNet + totalVat}${RESET}`);
     }
     if (bill.subsidiary) {
       const subName = netsuiteSubsidiaries[bill.subsidiary.id as keyof typeof netsuiteSubsidiaries]?.name || bill.subsidiary.id;
@@ -459,7 +467,11 @@ async function runDemo() {
   if (bill.expense?.items[0]) {
     const line = bill.expense.items[0];
     const acctName = (netsuiteAccounts as Record<string, { name: string }>)[line.account.id]?.name || line.account.id;
-    info(`    → Account: ${acctName} | Amount: ${line.amount} | Tax: ${(netsuiteTaxCodes as Record<string, { name: string }>)[line.taxCode?.id || '']?.name || 'N/A'}`);
+    const taxCodeName = line.taxCode
+      ? (netsuiteTaxCodes as Record<string, { name: string }>)[line.taxCode.id]?.name || line.taxCode.id
+      : 'none';
+    const taxAmtStr = line.taxAmount !== undefined ? `${line.taxAmount}` : '-';
+    info(`    → Account: ${acctName} | Net: ${line.amount} | ${BOLD}VAT: ${taxAmtStr}${RESET} | Tax Code: ${taxCodeName}`);
   }
 
   stepEnd();

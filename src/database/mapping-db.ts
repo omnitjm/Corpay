@@ -14,11 +14,14 @@ function ensureMappingSchema(): void {
 }
 
 // --- Account Mappings ---
+// The primary key for account mapping is the CorpayOne **category**
+// (what the user sees in CorpayOne, e.g. "IT Equipment", "Office Supplies").
+// The account_code field is stored for reference but the category drives the lookup.
 
 export interface AccountMapping {
   id: number;
-  corpayone_account_code: string;
-  corpayone_label: string | null;
+  corpayone_category: string;
+  corpayone_account_code: string | null;
   netsuite_account_id: string;
   netsuite_account_name: string | null;
   subsidiary_id: string | null;
@@ -27,32 +30,65 @@ export interface AccountMapping {
   updated_at: string;
 }
 
+/**
+ * Resolve which NetSuite GL account to use for a CorpayOne line item.
+ *
+ * Lookup order:
+ *   1. Match by category + subsidiary
+ *   2. Match by category (no subsidiary)
+ *   3. Match by account_code + subsidiary
+ *   4. Match by account_code (no subsidiary)
+ *   5. Default mapping (is_default = 1)
+ */
 export function getAccountMapping(
-  accountCode: string,
+  category?: string,
+  accountCode?: string,
   subsidiaryId?: string,
 ): AccountMapping | undefined {
   ensureMappingSchema();
   const db = getDatabase();
 
-  // Try exact match with subsidiary first
-  if (subsidiaryId) {
+  // 1. Try category + subsidiary
+  if (category && subsidiaryId) {
     const exact = db
+      .prepare(
+        'SELECT * FROM account_mappings WHERE corpayone_category = ? AND subsidiary_id = ?',
+      )
+      .get(category, subsidiaryId) as AccountMapping | undefined;
+    if (exact) return exact;
+  }
+
+  // 2. Try category only
+  if (category) {
+    const byCat = db
+      .prepare(
+        'SELECT * FROM account_mappings WHERE corpayone_category = ? AND subsidiary_id IS NULL',
+      )
+      .get(category) as AccountMapping | undefined;
+    if (byCat) return byCat;
+  }
+
+  // 3. Try account_code + subsidiary
+  if (accountCode && subsidiaryId) {
+    const byCode = db
       .prepare(
         'SELECT * FROM account_mappings WHERE corpayone_account_code = ? AND subsidiary_id = ?',
       )
       .get(accountCode, subsidiaryId) as AccountMapping | undefined;
-    if (exact) return exact;
+    if (byCode) return byCode;
   }
 
-  // Try without subsidiary
-  const match = db
-    .prepare(
-      'SELECT * FROM account_mappings WHERE corpayone_account_code = ? AND subsidiary_id IS NULL',
-    )
-    .get(accountCode) as AccountMapping | undefined;
-  if (match) return match;
+  // 4. Try account_code only
+  if (accountCode) {
+    const byCode = db
+      .prepare(
+        'SELECT * FROM account_mappings WHERE corpayone_account_code = ? AND subsidiary_id IS NULL',
+      )
+      .get(accountCode) as AccountMapping | undefined;
+    if (byCode) return byCode;
+  }
 
-  // Fall back to default
+  // 5. Fall back to default
   return db
     .prepare('SELECT * FROM account_mappings WHERE is_default = 1 LIMIT 1')
     .get() as AccountMapping | undefined;
@@ -62,13 +98,13 @@ export function getAllAccountMappings(): AccountMapping[] {
   ensureMappingSchema();
   const db = getDatabase();
   return db
-    .prepare('SELECT * FROM account_mappings ORDER BY is_default DESC, corpayone_account_code')
+    .prepare('SELECT * FROM account_mappings ORDER BY is_default DESC, corpayone_category')
     .all() as AccountMapping[];
 }
 
 export function upsertAccountMapping(mapping: {
-  corpayone_account_code: string;
-  corpayone_label?: string;
+  corpayone_category: string;
+  corpayone_account_code?: string;
   netsuite_account_id: string;
   netsuite_account_name?: string;
   subsidiary_id?: string;
@@ -77,24 +113,24 @@ export function upsertAccountMapping(mapping: {
   ensureMappingSchema();
   const db = getDatabase();
   db.prepare(`
-    INSERT INTO account_mappings (corpayone_account_code, corpayone_label, netsuite_account_id, netsuite_account_name, subsidiary_id, is_default, updated_at)
+    INSERT INTO account_mappings (corpayone_category, corpayone_account_code, netsuite_account_id, netsuite_account_name, subsidiary_id, is_default, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
-    ON CONFLICT(corpayone_account_code, subsidiary_id) DO UPDATE SET
-      corpayone_label = excluded.corpayone_label,
+    ON CONFLICT(corpayone_category, subsidiary_id) DO UPDATE SET
+      corpayone_account_code = excluded.corpayone_account_code,
       netsuite_account_id = excluded.netsuite_account_id,
       netsuite_account_name = excluded.netsuite_account_name,
       is_default = excluded.is_default,
       updated_at = datetime('now')
   `).run(
-    mapping.corpayone_account_code,
-    mapping.corpayone_label || null,
+    mapping.corpayone_category,
+    mapping.corpayone_account_code || null,
     mapping.netsuite_account_id,
     mapping.netsuite_account_name || null,
     mapping.subsidiary_id || null,
     mapping.is_default ? 1 : 0,
   );
 
-  return getAccountMapping(mapping.corpayone_account_code, mapping.subsidiary_id)!;
+  return getAccountMapping(mapping.corpayone_category, mapping.corpayone_account_code, mapping.subsidiary_id)!;
 }
 
 export function deleteAccountMapping(id: number): void {
@@ -126,7 +162,6 @@ export function getTaxCodeMapping(
   ensureMappingSchema();
   const db = getDatabase();
 
-  // Try exact match with subsidiary and country
   if (subsidiaryId && countryCode) {
     const exact = db
       .prepare(
@@ -136,7 +171,6 @@ export function getTaxCodeMapping(
     if (exact) return exact;
   }
 
-  // Try with just country
   if (countryCode) {
     const byCountry = db
       .prepare(
@@ -146,7 +180,6 @@ export function getTaxCodeMapping(
     if (byCountry) return byCountry;
   }
 
-  // Try rate only
   const byRate = db
     .prepare(
       'SELECT * FROM tax_code_mappings WHERE corpayone_vat_rate = ? AND subsidiary_id IS NULL AND country_code IS NULL',
@@ -154,7 +187,6 @@ export function getTaxCodeMapping(
     .get(vatRate) as TaxCodeMapping | undefined;
   if (byRate) return byRate;
 
-  // Fall back to default
   return db
     .prepare('SELECT * FROM tax_code_mappings WHERE is_default = 1 LIMIT 1')
     .get() as TaxCodeMapping | undefined;
@@ -227,7 +259,6 @@ export function getBankAccountConfig(
   ensureMappingSchema();
   const db = getDatabase();
 
-  // Try exact match
   if (currency && subsidiaryId) {
     const exact = db
       .prepare(
@@ -237,7 +268,6 @@ export function getBankAccountConfig(
     if (exact) return exact;
   }
 
-  // Try by currency
   if (currency) {
     const byCurrency = db
       .prepare(
@@ -247,7 +277,6 @@ export function getBankAccountConfig(
     if (byCurrency) return byCurrency;
   }
 
-  // Fall back to default
   return db
     .prepare('SELECT * FROM bank_account_config WHERE is_default = 1 LIMIT 1')
     .get() as BankAccountConfig | undefined;
