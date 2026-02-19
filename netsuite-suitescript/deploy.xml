@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  SuiteCloud Project manifest for the CorpayOne Integration SuiteApp.
+
+  Deploy this bundle to your NetSuite account to get the configuration
+  dashboard accessible at: Customization > Scripting > Scripts > CorpayOne Config
+-->
+<manifest projecttype="ACCOUNTCUSTOMIZATION">
+  <projectname>CorpayOne Integration</projectname>
+  <frameworkversion>1.0</frameworkversion>
+
+  <objects>
+    <!-- Suitelet Script Record -->
+    <object>
+      <path>Objects/customscript_corpay_config.xml</path>
+    </object>
+  </objects>
+
+  <files>
+    <file>
+      <path>SuiteScripts/corpay_config_suitelet.js</path>
+    </file>
+    <file>
+      <path>SuiteScripts/corpay_config_client.js</path>
+    </file>
+  </files>
+</manifest>
