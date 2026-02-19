@@ -1,139 +1,96 @@
 /**
- * Mock data representing realistic CorpayOne invoices, payments, and vendors,
- * and their expected NetSuite counterparts.
+ * Mock data representing realistic CorpayOne v3 API responses.
  *
- * Note: CorpayOne's API only returns invoice-level totals — no line items.
+ * Reflects the actual v3 API structure:
+ *   - Expenses (not invoices): GET /external/v3/expenses
+ *   - Lines array with category + amount per line (no VAT in API)
+ *   - State enum: Booked, Awaiting, Paid, Pending, Cancelled, etc.
+ *   - Vendor is shallow: only id/name/externalId
  */
-import type { CorpayOneInvoice, CorpayOnePayment, CorpayOneVendor } from '../src/types/corpayone';
+import type { CorpayOneExpense, CorpayOnePayment } from '../src/types/corpayone';
 
-// ─── Vendors ───────────────────────────────────────────────────────
+// ─── Expenses ──────────────────────────────────────────────────────
 
-export const vendors: Record<string, CorpayOneVendor> = {
-  'vendor-001': {
-    id: 'vendor-001',
-    name: 'TechSupply ApS',
-    email: 'faktura@techsupply.dk',
-    phone: '+45 70 20 30 40',
-    vat_number: 'DK12345678',
-    registration_number: '12345678',
-    address: {
-      street: 'Vestergade 12',
-      city: 'Copenhagen',
-      zip: '1456',
-      country: 'DK',
-    },
-    bank_account: {
-      iban: 'DK5000400440116243',
-      swift: 'DABADKKK',
-    },
-    created_at: '2025-01-15T10:00:00Z',
-    updated_at: '2025-01-15T10:00:00Z',
-  },
-  'vendor-002': {
-    id: 'vendor-002',
-    name: 'CloudHost GmbH',
-    email: 'billing@cloudhost.de',
-    phone: '+49 30 1234567',
-    vat_number: 'DE987654321',
-    address: {
-      street: 'Berliner Str. 42',
-      city: 'Berlin',
-      zip: '10115',
-      country: 'DE',
-    },
-    bank_account: {
-      iban: 'DE89370400440532013000',
-      swift: 'COBADEFFXXX',
-    },
-    created_at: '2025-02-01T08:30:00Z',
-    updated_at: '2025-02-01T08:30:00Z',
-  },
-  'vendor-003': {
-    id: 'vendor-003',
-    name: 'Office Solutions Ltd',
-    email: 'accounts@officesolutions.co.uk',
-    phone: '+44 20 7946 0958',
-    vat_number: 'GB123456789',
-    address: {
-      street: '10 Downing Business Park',
-      city: 'London',
-      zip: 'SW1A 2AA',
-      country: 'GB',
-    },
-    created_at: '2025-03-10T14:00:00Z',
-    updated_at: '2025-03-10T14:00:00Z',
-  },
-};
-
-// ─── Invoices ──────────────────────────────────────────────────────
-
-export const invoices: CorpayOneInvoice[] = [
+export const expenses: CorpayOneExpense[] = [
   {
-    id: 'inv-1001',
-    invoice_number: 'TS-2025-0042',
-    vendor: vendors['vendor-001'],
-    status: 'approved',
+    // Multi-line expense — 2 split lines across different categories
+    id: 'exp-1001',
+    type: 'Bill',
+    reference: 'TS-2025-0042',
+    amount: 10000,
     currency: 'DKK',
-    subtotal: 8000,
-    vat_amount: 2000,
-    total_amount: 10000,
-    due_date: '2025-03-15T00:00:00Z',
-    invoice_date: '2025-02-15T00:00:00Z',
-    description: 'IT Equipment - Q1 2025',
-    reference: 'PO-2025-101',
-    po_number: 'PO-2025-101',
-    category: 'IT Equipment',
-    labels: ['IT', 'Q1-2025'],
-    created_at: '2025-02-15T09:00:00Z',
-    updated_at: '2025-02-16T11:30:00Z',
+    state: 'Booked',
+    friendlyStatus: 'Booked',
+    issueDate: '2025-02-15T00:00:00Z',
+    dueDate: '2025-03-15T00:00:00Z',
+    category: { id: 'cat-1', name: 'IT Equipment', number: '5010' },
+    vendor: { id: 'vendor-001', name: 'TechSupply ApS', externalId: 'corpay-vendor-001' },
+    lines: [
+      {
+        id: 'line-1',
+        category: { id: 'cat-1', name: 'IT Equipment', number: '5010' },
+        amount: 7500,
+        note: 'Dell Latitude 5550 Laptop x2',
+      },
+      {
+        id: 'line-2',
+        category: { id: 'cat-2', name: 'Office Supplies', number: '5020' },
+        amount: 2500,
+        note: 'Logitech MX Master 3S Mouse x4',
+      },
+    ],
   },
   {
-    id: 'inv-1002',
-    invoice_number: 'CH-8834',
-    vendor: vendors['vendor-002'],
-    status: 'approved',
+    // Single-line expense — no line splits
+    id: 'exp-1002',
+    type: 'Bill',
+    reference: 'CH-8834',
+    amount: 2975,
     currency: 'EUR',
-    subtotal: 2500,
-    vat_amount: 475,
-    total_amount: 2975,
-    due_date: '2025-04-01T00:00:00Z',
-    invoice_date: '2025-03-01T00:00:00Z',
-    description: 'Cloud hosting services - March 2025',
-    category: 'Cloud Services',
-    labels: ['Infrastructure'],
-    created_at: '2025-03-01T08:00:00Z',
-    updated_at: '2025-03-02T10:00:00Z',
+    state: 'Awaiting',
+    friendlyStatus: 'Awaiting',
+    issueDate: '2025-03-01T00:00:00Z',
+    dueDate: '2025-04-01T00:00:00Z',
+    category: { id: 'cat-3', name: 'Cloud Services', number: '6100' },
+    vendor: { id: 'vendor-002', name: 'CloudHost GmbH', externalId: 'corpay-vendor-002' },
+    lines: [],
   },
   {
-    id: 'inv-1003',
-    invoice_number: 'OS-2025-771',
-    vendor: vendors['vendor-003'],
-    status: 'paid',
+    // Paid expense — payment already settled
+    id: 'exp-1003',
+    type: 'Bill',
+    reference: 'OS-2025-771',
+    amount: 1440,
     currency: 'GBP',
-    subtotal: 1200,
-    vat_amount: 240,
-    total_amount: 1440,
-    due_date: '2025-03-20T00:00:00Z',
-    invoice_date: '2025-02-20T00:00:00Z',
-    description: 'Office furniture delivery',
-    category: 'Office Furniture',
-    created_at: '2025-02-20T14:00:00Z',
-    updated_at: '2025-03-18T09:00:00Z',
+    state: 'Paid',
+    friendlyStatus: 'Paid',
+    issueDate: '2025-02-20T00:00:00Z',
+    dueDate: '2025-03-20T00:00:00Z',
+    paymentDate: '2025-03-18T09:00:00Z',
+    category: { id: 'cat-4', name: 'Office Furniture', number: '5030' },
+    vendor: { id: 'vendor-003', name: 'Office Solutions Ltd', externalId: 'corpay-vendor-003' },
+    lines: [
+      {
+        id: 'line-5',
+        category: { id: 'cat-4', name: 'Office Furniture', number: '5030' },
+        amount: 1440,
+        note: 'Standing desk - Flexispot E7 x2',
+      },
+    ],
   },
   {
-    id: 'inv-1004',
-    invoice_number: 'DRAFT-99',
-    vendor: vendors['vendor-001'],
-    status: 'draft',
+    // Pending (draft) — should be skipped
+    id: 'exp-1004',
+    type: 'Bill',
+    reference: 'DRAFT-99',
+    amount: 625,
     currency: 'DKK',
-    subtotal: 500,
-    vat_amount: 125,
-    total_amount: 625,
-    due_date: '2025-04-15T00:00:00Z',
-    invoice_date: '2025-03-15T00:00:00Z',
-    description: 'Miscellaneous supplies (draft)',
-    created_at: '2025-03-15T12:00:00Z',
-    updated_at: '2025-03-15T12:00:00Z',
+    state: 'Pending',
+    friendlyStatus: 'Pending',
+    issueDate: '2025-03-15T00:00:00Z',
+    dueDate: '2025-04-15T00:00:00Z',
+    vendor: { id: 'vendor-001', name: 'TechSupply ApS' },
+    lines: [],
   },
 ];
 
@@ -142,7 +99,7 @@ export const invoices: CorpayOneInvoice[] = [
 export const payments: CorpayOnePayment[] = [
   {
     id: 'pay-2001',
-    invoice_id: 'inv-1003',
+    expense_id: 'exp-1003',
     amount: 1440,
     currency: 'GBP',
     status: 'completed',
@@ -155,7 +112,7 @@ export const payments: CorpayOnePayment[] = [
   },
   {
     id: 'pay-2002',
-    invoice_id: 'inv-1001',
+    expense_id: 'exp-1001',
     amount: 10000,
     currency: 'DKK',
     status: 'pending',

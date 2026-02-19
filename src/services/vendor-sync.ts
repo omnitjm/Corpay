@@ -6,16 +6,17 @@ import {
   upsertSyncedVendor,
   getSyncedVendorByCorpayId,
 } from '../database/db';
-import type { CorpayOneVendor } from '../types/corpayone';
+import type { CorpayOneVendorShallow } from '../types/corpayone';
 
 /**
  * Ensures a CorpayOne vendor exists in NetSuite.
- * Looks up by external ID first, then by name, and creates if not found.
  *
+ * The v3 API only provides shallow vendor info (id, name, externalId).
+ * We look up by externalId first, then by name, and create if not found.
  * Returns the NetSuite internal vendor ID.
  */
 export async function ensureVendorInNetSuite(
-  vendor: CorpayOneVendor,
+  vendor: CorpayOneVendorShallow,
   corpayClient: CorpayOneClient,
   netsuiteClient: NetSuiteClient,
 ): Promise<string> {
@@ -25,16 +26,13 @@ export async function ensureVendorInNetSuite(
     return syncedVendor.netsuite_vendor_id;
   }
 
-  // Try to find vendor in NetSuite by external ID
   const externalId = `corpay-vendor-${vendor.id}`;
-  let nsVendor = await netsuiteClient.findVendorByExternalId(externalId);
 
+  // Try to find vendor in NetSuite by external ID
+  let nsVendor = await netsuiteClient.findVendorByExternalId(externalId);
   if (nsVendor?.id) {
     upsertSyncedVendor(vendor.id, vendor.name, nsVendor.id, 'synced');
-    logger.info(
-      { corpayone_vendor_id: vendor.id, netsuite_vendor_id: nsVendor.id },
-      'Found existing vendor in NetSuite by external ID',
-    );
+    logger.info({ corpayone_vendor_id: vendor.id, netsuite_vendor_id: nsVendor.id }, 'Found existing vendor in NetSuite by external ID');
     return nsVendor.id;
   }
 
@@ -42,31 +40,20 @@ export async function ensureVendorInNetSuite(
   nsVendor = await netsuiteClient.findVendorByName(vendor.name);
   if (nsVendor?.id) {
     upsertSyncedVendor(vendor.id, vendor.name, nsVendor.id, 'synced');
-    logger.info(
-      { corpayone_vendor_id: vendor.id, netsuite_vendor_id: nsVendor.id },
-      'Found existing vendor in NetSuite by name',
-    );
+    logger.info({ corpayone_vendor_id: vendor.id, netsuite_vendor_id: nsVendor.id }, 'Found existing vendor in NetSuite by name');
     return nsVendor.id;
   }
 
-  // Create new vendor in NetSuite
+  // Create new vendor — v3 API only gives us name and externalId
   try {
     const newVendorId = await netsuiteClient.createVendor({
       companyName: vendor.name,
       externalId,
-      email: vendor.email,
-      phone: vendor.phone,
-      taxIdNum: vendor.vat_number || vendor.registration_number,
-      subsidiary: config.netsuite.subsidiaryId
-        ? { id: config.netsuite.subsidiaryId }
-        : undefined,
+      subsidiary: config.netsuite.subsidiaryId ? { id: config.netsuite.subsidiaryId } : undefined,
     });
 
     upsertSyncedVendor(vendor.id, vendor.name, newVendorId, 'synced');
-    logger.info(
-      { corpayone_vendor_id: vendor.id, netsuite_vendor_id: newVendorId },
-      'Created new vendor in NetSuite',
-    );
+    logger.info({ corpayone_vendor_id: vendor.id, netsuite_vendor_id: newVendorId }, 'Created new vendor in NetSuite');
     return newVendorId;
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);

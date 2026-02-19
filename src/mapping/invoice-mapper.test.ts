@@ -1,4 +1,4 @@
-import type { CorpayOneInvoice, CorpayOnePayment } from '../types/corpayone';
+import type { CorpayOneExpense, CorpayOnePayment } from '../types/corpayone';
 
 // Mock config
 jest.mock('../config', () => ({
@@ -36,40 +36,43 @@ jest.mock('../database/mapping-db', () => ({
 }));
 
 import {
-  mapInvoiceToVendorBill,
+  mapExpenseToVendorBill,
   mapPaymentToVendorPayment,
   isSyncableStatus,
   isSyncablePayment,
 } from './invoice-mapper';
 
-const mockInvoice: CorpayOneInvoice = {
-  id: 'inv-001',
-  invoice_number: 'INV-2025-001',
-  vendor: {
-    id: 'vendor-001',
-    name: 'Test Vendor ApS',
-    email: 'vendor@test.dk',
-    created_at: '2025-01-01T00:00:00Z',
-    updated_at: '2025-01-01T00:00:00Z',
-  },
-  status: 'approved',
+const mockExpense: CorpayOneExpense = {
+  id: 'exp-001',
+  type: 'Bill',
+  reference: 'INV-2025-001',
+  amount: 10000,
   currency: 'DKK',
-  subtotal: 8000,
-  vat_amount: 2000,
-  total_amount: 10000,
-  due_date: '2025-03-01T00:00:00Z',
-  invoice_date: '2025-02-01T00:00:00Z',
-  description: 'Consulting services',
-  reference: 'REF-123',
-  po_number: 'PO-456',
-  category: 'Consulting',
-  created_at: '2025-02-01T00:00:00Z',
-  updated_at: '2025-02-01T00:00:00Z',
+  state: 'Booked',
+  friendlyStatus: 'Booked',
+  issueDate: '2025-02-01T00:00:00Z',
+  dueDate: '2025-03-01T00:00:00Z',
+  category: { id: 'cat-1', name: 'Consulting', number: '5000' },
+  vendor: { id: 'vendor-001', name: 'Test Vendor ApS' },
+  lines: [
+    {
+      id: 'line-1',
+      category: { id: 'cat-1', name: 'Consulting', number: '5000' },
+      amount: 7000,
+      note: 'Consulting services Q1',
+    },
+    {
+      id: 'line-2',
+      category: { id: 'cat-2', name: 'Office Supplies', number: '5020' },
+      amount: 3000,
+      note: 'Printer paper and toner',
+    },
+  ],
 };
 
 const mockPayment: CorpayOnePayment = {
   id: 'pay-001',
-  invoice_id: 'inv-001',
+  expense_id: 'exp-001',
   amount: 10000,
   currency: 'DKK',
   status: 'completed',
@@ -80,60 +83,96 @@ const mockPayment: CorpayOnePayment = {
   updated_at: '2025-02-15T00:00:00Z',
 };
 
-describe('mapInvoiceToVendorBill', () => {
-  it('should map a CorpayOne invoice to a NetSuite vendor bill', () => {
-    const result = mapInvoiceToVendorBill(mockInvoice, '42');
+describe('mapExpenseToVendorBill', () => {
+  it('should map a CorpayOne expense to a NetSuite vendor bill', () => {
+    const result = mapExpenseToVendorBill(mockExpense, '42');
 
     expect(result.entity).toEqual({ id: '42' });
-    expect(result.externalId).toBe('corpay-inv-001');
+    expect(result.externalId).toBe('corpay-exp-001');
     expect(result.tranId).toBe('INV-2025-001');
     expect(result.tranDate).toBe('02/01/2025');
     expect(result.dueDate).toBe('03/01/2025');
     expect(result.subsidiary).toEqual({ id: '1' });
-    expect(result.memo).toContain('Consulting services');
-    expect(result.memo).toContain('REF-123');
-    expect(result.memo).toContain('PO-456');
-    expect(result.memo).toContain('[CorpayOne: inv-001]');
+    expect(result.memo).toContain('INV-2025-001');
+    expect(result.memo).toContain('[CorpayOne: exp-001]');
   });
 
-  it('should always create exactly one expense line from invoice totals', () => {
-    const result = mapInvoiceToVendorBill(mockInvoice, '42');
+  it('should create multiple expense lines when expense has lines', () => {
+    const result = mapExpenseToVendorBill(mockExpense, '42');
+
+    expect(result.expense?.items).toHaveLength(2);
+    expect(result.expense?.items[0].amount).toBe(7000);
+    expect(result.expense?.items[0].memo).toBe('Consulting services Q1');
+    expect(result.expense?.items[1].amount).toBe(3000);
+    expect(result.expense?.items[1].memo).toBe('Printer paper and toner');
+  });
+
+  it('should create single expense line when no lines present', () => {
+    const noLinesExpense: CorpayOneExpense = {
+      ...mockExpense,
+      lines: [],
+    };
+    const result = mapExpenseToVendorBill(noLinesExpense, '42');
 
     expect(result.expense?.items).toHaveLength(1);
-    expect(result.expense?.items[0].amount).toBe(8000); // subtotal
-    expect(result.expense?.items[0].taxAmount).toBe(2000); // vat_amount
-    expect(result.expense?.items[0].memo).toBe('Consulting services');
+    expect(result.expense?.items[0].amount).toBe(10000);
+    expect(result.expense?.items[0].memo).toBe('INV-2025-001');
   });
 
   it('should use AP account as fallback when no mapping exists', () => {
-    const result = mapInvoiceToVendorBill(mockInvoice, '42');
+    const result = mapExpenseToVendorBill(mockExpense, '42');
 
+    // With mocked mapping-db returning undefined, falls back to apAccountId
     expect(result.expense?.items[0].account).toEqual({ id: '200' });
+    expect(result.expense?.items[1].account).toEqual({ id: '200' });
   });
 
-  it('should compute implied VAT rate for tax code lookup', () => {
-    // 2000 / 8000 = 25% → should attempt to resolve tax code for 25%
-    const result = mapInvoiceToVendorBill(mockInvoice, '42');
+  it('should not set tax codes (v3 API has no VAT data)', () => {
+    const result = mapExpenseToVendorBill(mockExpense, '42');
 
-    // With mocked mapping-db returning undefined, no taxCode is set
     expect(result.expense?.items[0].taxCode).toBeUndefined();
-    // But taxAmount is always passed through
-    expect(result.expense?.items[0].taxAmount).toBe(2000);
+    expect(result.expense?.items[0].taxAmount).toBeUndefined();
+    expect(result.expense?.items[1].taxCode).toBeUndefined();
+    expect(result.expense?.items[1].taxAmount).toBeUndefined();
   });
 
-  it('should handle invoice with zero VAT', () => {
-    const noVatInvoice = { ...mockInvoice, vat_amount: 0, total_amount: 8000 };
-    const result = mapInvoiceToVendorBill(noVatInvoice, '42');
+  it('should use fx.homeAmount when FX data is present', () => {
+    const fxExpense: CorpayOneExpense = {
+      ...mockExpense,
+      lines: [],
+      currency: 'EUR',
+      amount: 1000,
+      fx: {
+        homeAmount: 7450,
+        foreignAmount: 1000,
+        homeCurrency: 'DKK',
+        foreignCurrency: 'EUR',
+        isForeignFixedCurrency: false,
+        exchangeRate: 7.45,
+      },
+    };
+    const result = mapExpenseToVendorBill(fxExpense, '42');
 
     expect(result.expense?.items).toHaveLength(1);
-    expect(result.expense?.items[0].amount).toBe(8000);
-    expect(result.expense?.items[0].taxAmount).toBeUndefined();
+    expect(result.expense?.items[0].amount).toBe(7450); // homeAmount, not 1000
+  });
+
+  it('should handle expense with no reference', () => {
+    const noRefExpense: CorpayOneExpense = {
+      ...mockExpense,
+      reference: undefined,
+      lines: [],
+    };
+    const result = mapExpenseToVendorBill(noRefExpense, '42');
+
+    expect(result.tranId).toBeUndefined();
+    expect(result.expense?.items[0].memo).toBe('CorpayOne expense exp-001');
   });
 });
 
 describe('mapPaymentToVendorPayment', () => {
   it('should map a CorpayOne payment to a NetSuite vendor payment', () => {
-    const result = mapPaymentToVendorPayment(mockPayment, mockInvoice, '42', '99');
+    const result = mapPaymentToVendorPayment(mockPayment, mockExpense, '42', '99');
 
     expect(result.entity).toEqual({ id: '42' });
     expect(result.externalId).toBe('corpay-pay-pay-001');
@@ -145,7 +184,7 @@ describe('mapPaymentToVendorPayment', () => {
   });
 
   it('should create apply lines for the vendor bill', () => {
-    const result = mapPaymentToVendorPayment(mockPayment, mockInvoice, '42', '99');
+    const result = mapPaymentToVendorPayment(mockPayment, mockExpense, '42', '99');
 
     expect(result.apply?.items).toHaveLength(1);
     expect(result.apply?.items[0]).toEqual({
@@ -157,36 +196,36 @@ describe('mapPaymentToVendorPayment', () => {
 });
 
 describe('isSyncableStatus', () => {
-  it('should return true for approved invoices', () => {
-    expect(isSyncableStatus('approved')).toBe(true);
+  it('should return true for Booked expenses', () => {
+    expect(isSyncableStatus('Booked')).toBe(true);
   });
 
-  it('should return true for scheduled invoices', () => {
-    expect(isSyncableStatus('scheduled')).toBe(true);
+  it('should return true for Awaiting expenses', () => {
+    expect(isSyncableStatus('Awaiting')).toBe(true);
   });
 
-  it('should return true for paid invoices', () => {
-    expect(isSyncableStatus('paid')).toBe(true);
+  it('should return true for Paid expenses', () => {
+    expect(isSyncableStatus('Paid')).toBe(true);
   });
 
-  it('should return true for partially paid invoices', () => {
-    expect(isSyncableStatus('partially_paid')).toBe(true);
+  it('should return false for Pending expenses', () => {
+    expect(isSyncableStatus('Pending')).toBe(false);
   });
 
-  it('should return false for draft invoices', () => {
-    expect(isSyncableStatus('draft')).toBe(false);
+  it('should return false for Cancelled expenses', () => {
+    expect(isSyncableStatus('Cancelled')).toBe(false);
   });
 
-  it('should return false for pending approval invoices', () => {
-    expect(isSyncableStatus('pending_approval')).toBe(false);
+  it('should return false for Paused expenses', () => {
+    expect(isSyncableStatus('Paused')).toBe(false);
   });
 
-  it('should return false for rejected invoices', () => {
-    expect(isSyncableStatus('rejected')).toBe(false);
+  it('should return false for Duplicate expenses', () => {
+    expect(isSyncableStatus('Duplicate')).toBe(false);
   });
 
-  it('should return false for cancelled invoices', () => {
-    expect(isSyncableStatus('cancelled')).toBe(false);
+  it('should return false for Initialized expenses', () => {
+    expect(isSyncableStatus('Initialized')).toBe(false);
   });
 });
 

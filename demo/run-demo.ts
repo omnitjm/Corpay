@@ -7,9 +7,9 @@
  * APIs with in-memory mocks, showing:
  *
  *   Step 1: Configure mapping (like the NetSuite Suitelet dashboard)
- *   Step 2: Fetch invoices from CorpayOne
+ *   Step 2: Fetch expenses from CorpayOne (v3 API)
  *   Step 3: Sync vendors to NetSuite
- *   Step 4: Sync vendor bills to NetSuite (1 line per bill, mapped accounts & tax codes)
+ *   Step 4: Sync vendor bills to NetSuite (mapped accounts, multi-line support)
  *   Step 5: Sync payments to NetSuite (with mapped bank account)
  *   Step 6: Show final sync status
  *
@@ -38,9 +38,8 @@ if (fs.existsSync(demoDbPath)) fs.unlinkSync(demoDbPath);
 process.env.DATABASE_PATH = demoDbPath;
 
 import {
-  invoices,
+  expenses,
   payments,
-  vendors,
   netsuiteAccounts,
   netsuiteTaxCodes,
   netsuiteSubsidiaries,
@@ -57,7 +56,7 @@ import {
 } from '../src/database/mapping-db';
 import { getDatabase, closeDatabase } from '../src/database/db';
 import {
-  mapInvoiceToVendorBill,
+  mapExpenseToVendorBill,
   mapPaymentToVendorPayment,
   isSyncableStatus,
   isSyncablePayment,
@@ -144,7 +143,7 @@ function sleep(ms: number) {
 
 let nextNsId = 5000;
 const nsVendors: Record<string, { id: string; companyName: string; externalId: string }> = {};
-const nsBills: Record<string, { id: string; entity: string; externalId: string; tranId: string; total: number }> = {};
+const nsBills: Record<string, { id: string; entity: string; externalId: string; tranId: string; total: number; lines: number }> = {};
 const nsPayments: Record<string, { id: string; entity: string; externalId: string; appliedTo: string; amount: number }> = {};
 
 function mockCreateVendor(name: string, externalId: string): string {
@@ -153,15 +152,17 @@ function mockCreateVendor(name: string, externalId: string): string {
   return id;
 }
 
-function mockCreateBill(bill: ReturnType<typeof mapInvoiceToVendorBill>): string {
+function mockCreateBill(bill: ReturnType<typeof mapExpenseToVendorBill>): string {
   const id = String(nextNsId++);
   const total = bill.expense?.items.reduce((sum, item) => sum + item.amount, 0) || 0;
+  const lines = bill.expense?.items.length || 0;
   nsBills[id] = {
     id,
     entity: bill.entity.id,
     externalId: bill.externalId || '',
     tranId: bill.tranId || '',
     total,
+    lines,
   };
   return id;
 }
@@ -196,8 +197,8 @@ async function runDemo() {
   step(1, 'Configure Mapping in NetSuite (one-way: CorpayOne → NetSuite)');
   info('An admin opens the CorpayOne Configuration Suitelet in NetSuite.');
   info(`${BOLD}Nothing is configured in CorpayOne${RESET} — it is read-only.`);
-  info('The admin maps CorpayOne expense categories to NetSuite GL accounts,');
-  info('CorpayOne VAT rates to NetSuite tax codes, and selects bank accounts.\n');
+  info('The admin maps CorpayOne expense categories to NetSuite GL accounts');
+  info('and selects bank accounts for payment sync.\n');
 
   info(`${BOLD}Configuring subsidiary...${RESET}`);
   upsertSubsidiaryConfig({
@@ -210,7 +211,7 @@ async function runDemo() {
   await sleep(200);
 
   info(`\n${BOLD}Mapping CorpayOne categories → NetSuite GL accounts...${RESET}`);
-  info(`These categories come from the CorpayOne invoice category field.\n`);
+  info(`These categories come from the CorpayOne expense category field.\n`);
   const accountMaps = [
     { corpayone_category: 'IT Equipment', corpayone_account_code: '5010', netsuite_account_id: '201', netsuite_account_name: 'IT Equipment' },
     { corpayone_category: 'Office Supplies', corpayone_account_code: '5020', netsuite_account_id: '202', netsuite_account_name: 'Office Supplies' },
@@ -226,6 +227,7 @@ async function runDemo() {
   await sleep(200);
 
   info(`\n${BOLD}Configuring tax code mappings...${RESET}`);
+  info(`(CorpayOne v3 API has no VAT data — tax codes apply via NetSuite rules)\n`);
   const taxMaps = [
     { corpayone_vat_rate: 25, corpayone_label: 'DK Moms 25%', netsuite_tax_code_id: 'DK-S-25', netsuite_tax_code_name: 'DK Moms 25%', country_code: 'DK' },
     { corpayone_vat_rate: 19, corpayone_label: 'DE Umsatzsteuer 19%', netsuite_tax_code_id: 'DE-S-19', netsuite_tax_code_name: 'DE Umsatzsteuer 19%', country_code: 'DE' },
@@ -252,50 +254,50 @@ async function runDemo() {
   stepEnd();
   await sleep(500);
 
-  // ── Step 2: Fetch invoices from CorpayOne ──────────────────────
+  // ── Step 2: Fetch expenses from CorpayOne ──────────────────────
 
-  step(2, 'Fetch Invoices from CorpayOne (read-only)');
-  info(`Calling GET /v1/invoices ... (CorpayOne is only read, never written to)\n`);
+  step(2, 'Fetch Expenses from CorpayOne (v3 API, read-only)');
+  info(`Calling GET /external/v3/expenses ... (CorpayOne is only read, never written to)\n`);
 
   await sleep(300);
 
   table(
-    invoices.map((inv) => ({
-      ID: inv.id,
-      Number: inv.invoice_number || '-',
-      Vendor: inv.vendor.name,
-      Status: inv.status,
-      'Net': `${inv.subtotal} ${inv.currency}`,
-      'VAT': `${inv.vat_amount} ${inv.currency}`,
-      'Total': `${inv.total_amount} ${inv.currency}`,
+    expenses.map((exp) => ({
+      ID: exp.id,
+      Reference: exp.reference || '-',
+      Vendor: exp.vendor?.name || '-',
+      State: exp.state,
+      Amount: `${exp.amount} ${exp.currency}`,
+      Lines: String(exp.lines.length),
     })),
   );
 
-  info(`\nFetched ${BOLD}${invoices.length}${RESET} invoices from CorpayOne`);
+  info(`\nFetched ${BOLD}${expenses.length}${RESET} expenses from CorpayOne`);
   stepEnd();
   await sleep(500);
 
   // ── Step 3: Sync vendors to NetSuite ───────────────────────────
 
   step(3, 'Sync Vendors to NetSuite');
-  info('For each syncable invoice, ensure the vendor exists in NetSuite.\n');
+  info('For each syncable expense, ensure the vendor exists in NetSuite.\n');
 
   const vendorMap: Record<string, string> = {};
   const seenVendors = new Set<string>();
 
-  for (const inv of invoices) {
-    if (!isSyncableStatus(inv.status)) continue;
-    if (seenVendors.has(inv.vendor.id)) continue;
-    seenVendors.add(inv.vendor.id);
+  for (const exp of expenses) {
+    if (!isSyncableStatus(exp.state)) continue;
+    if (!exp.vendor) continue;
+    if (seenVendors.has(exp.vendor.id)) continue;
+    seenVendors.add(exp.vendor.id);
 
     await sleep(200);
-    info(`Looking up vendor "${inv.vendor.name}" (${inv.vendor.id})...`);
-    info(`  SuiteQL: SELECT id FROM vendor WHERE externalid = 'corpay-vendor-${inv.vendor.id}'`);
+    info(`Looking up vendor "${exp.vendor.name}" (${exp.vendor.id})...`);
+    info(`  SuiteQL: SELECT id FROM vendor WHERE externalid = 'corpay-vendor-${exp.vendor.id}'`);
     info(`  → Not found. Creating new vendor...`);
 
-    const nsVendorId = mockCreateVendor(inv.vendor.name, `corpay-vendor-${inv.vendor.id}`);
-    vendorMap[inv.vendor.id] = nsVendorId;
-    success(`Created vendor "${inv.vendor.name}" → NS Internal ID: ${nsVendorId}`);
+    const nsVendorId = mockCreateVendor(exp.vendor.name, `corpay-vendor-${exp.vendor.id}`);
+    vendorMap[exp.vendor.id] = nsVendorId;
+    success(`Created vendor "${exp.vendor.name}" → NS Internal ID: ${nsVendorId}`);
   }
 
   stepEnd();
@@ -303,39 +305,43 @@ async function runDemo() {
 
   // ── Step 4: Sync vendor bills ──────────────────────────────────
 
-  step(4, 'Sync Vendor Bills to NetSuite (with mapped accounts & tax codes)');
-  info('Map each approved invoice to a NetSuite Vendor Bill.\n');
+  step(4, 'Sync Vendor Bills to NetSuite (with mapped accounts, multi-line support)');
+  info('Map each approved expense to a NetSuite Vendor Bill.\n');
 
   const billMap: Record<string, string> = {};
   let synced = 0;
   let skipped = 0;
 
-  for (const inv of invoices) {
+  for (const exp of expenses) {
     await sleep(300);
 
-    if (!isSyncableStatus(inv.status)) {
-      skip(`${inv.id} (${inv.invoice_number || 'no number'}) — status "${inv.status}" → Skipped`);
+    if (!isSyncableStatus(exp.state)) {
+      skip(`${exp.id} (${exp.reference || 'no ref'}) — state "${exp.state}" → Skipped`);
       skipped++;
       continue;
     }
 
-    const nsVendorId = vendorMap[inv.vendor.id];
-    const bill = mapInvoiceToVendorBill(inv, nsVendorId);
+    if (!exp.vendor) {
+      warn(`${exp.id} — no vendor → Skipped`);
+      skipped++;
+      continue;
+    }
+
+    const nsVendorId = vendorMap[exp.vendor.id];
+    const bill = mapExpenseToVendorBill(exp, nsVendorId);
     const nsBillId = mockCreateBill(bill);
-    billMap[inv.id] = nsBillId;
+    billMap[exp.id] = nsBillId;
     synced++;
 
-    success(`${inv.id} (${inv.invoice_number}) → NS Vendor Bill #${nsBillId}`);
+    success(`${exp.id} (${exp.reference}) → NS Vendor Bill #${nsBillId}`);
 
-    // Show the single expense line (CorpayOne gives invoice-level totals only)
-    if (bill.expense?.items[0]) {
-      const line = bill.expense.items[0];
-      const acctName = (netsuiteAccounts as Record<string, { name: string }>)[line.account.id]?.name || line.account.id;
-      const taxCodeName = line.taxCode
-        ? (netsuiteTaxCodes as Record<string, { name: string }>)[line.taxCode.id]?.name || line.taxCode.id
-        : 'none';
-      const taxAmtStr = line.taxAmount !== undefined ? `${line.taxAmount}` : '-';
-      info(`    → Account: ${acctName} (${line.account.id}) | Net: ${line.amount} | ${BOLD}VAT: ${taxAmtStr}${RESET} | Tax Code: ${taxCodeName} | Total: ${inv.total_amount}`);
+    // Show each expense line
+    if (bill.expense?.items) {
+      for (const line of bill.expense.items) {
+        const acctName = (netsuiteAccounts as Record<string, { name: string }>)[line.account.id]?.name || line.account.id;
+        info(`    → Account: ${acctName} (${line.account.id}) | Amount: ${line.amount} | Memo: ${line.memo || '-'}`);
+      }
+      info(`    → ${BOLD}${bill.expense.items.length} line(s)${RESET} | Total: ${exp.amount} ${exp.currency}`);
     }
     if (bill.subsidiary) {
       const subName = netsuiteSubsidiaries[bill.subsidiary.id as keyof typeof netsuiteSubsidiaries]?.name || bill.subsidiary.id;
@@ -364,22 +370,28 @@ async function runDemo() {
       continue;
     }
 
-    const inv = invoices.find((i) => i.id === pay.invoice_id);
-    if (!inv) {
-      warn(`${pay.id} — invoice ${pay.invoice_id} not found → Skipped`);
+    const exp = expenses.find((e) => e.id === pay.expense_id);
+    if (!exp) {
+      warn(`${pay.id} — expense ${pay.expense_id} not found → Skipped`);
       paymentsSkipped++;
       continue;
     }
 
-    const nsVendorId = vendorMap[inv.vendor.id];
-    const nsBillId = billMap[pay.invoice_id];
+    if (!exp.vendor) {
+      warn(`${pay.id} — expense ${pay.expense_id} has no vendor → Skipped`);
+      paymentsSkipped++;
+      continue;
+    }
+
+    const nsVendorId = vendorMap[exp.vendor.id];
+    const nsBillId = billMap[pay.expense_id];
     if (!nsBillId) {
-      warn(`${pay.id} — bill not synced for invoice ${pay.invoice_id} → Marked as pending`);
+      warn(`${pay.id} — bill not synced for expense ${pay.expense_id} → Marked as pending`);
       paymentsSkipped++;
       continue;
     }
 
-    const vendorPayment = mapPaymentToVendorPayment(pay, inv, nsVendorId, nsBillId);
+    const vendorPayment = mapPaymentToVendorPayment(pay, exp, nsVendorId, nsBillId);
     const nsPaymentId = mockCreatePayment(vendorPayment);
     paymentsSynced++;
 
@@ -420,6 +432,7 @@ async function runDemo() {
       'Vendor ID': b.entity,
       'Tran ID': b.tranId,
       'Total': String(b.total),
+      'Lines': String(b.lines),
       'External ID': b.externalId,
     })),
   );
