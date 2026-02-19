@@ -9,10 +9,9 @@
  *   Step 1: Configure mapping (like the NetSuite Suitelet dashboard)
  *   Step 2: Fetch invoices from CorpayOne
  *   Step 3: Sync vendors to NetSuite
- *   Step 4: Sync vendor bills to NetSuite (with mapped accounts & tax codes)
+ *   Step 4: Sync vendor bills to NetSuite (1 line per bill, mapped accounts & tax codes)
  *   Step 5: Sync payments to NetSuite (with mapped bank account)
- *   Step 6: Handle a real-time webhook event
- *   Step 7: Show final sync status
+ *   Step 6: Show final sync status
  *
  * Run: npx ts-node demo/run-demo.ts
  */
@@ -38,7 +37,6 @@ const demoDbPath = path.join(__dirname, 'demo-sync.db');
 if (fs.existsSync(demoDbPath)) fs.unlinkSync(demoDbPath);
 process.env.DATABASE_PATH = demoDbPath;
 
-import type { CorpayOneInvoice } from '../src/types/corpayone';
 import {
   invoices,
   payments,
@@ -212,7 +210,7 @@ async function runDemo() {
   await sleep(200);
 
   info(`\n${BOLD}Mapping CorpayOne categories → NetSuite GL accounts...${RESET}`);
-  info(`These categories come from CorpayOne invoice line items automatically.\n`);
+  info(`These categories come from the CorpayOne invoice category field.\n`);
   const accountMaps = [
     { corpayone_category: 'IT Equipment', corpayone_account_code: '5010', netsuite_account_id: '201', netsuite_account_name: 'IT Equipment' },
     { corpayone_category: 'Office Supplies', corpayone_account_code: '5020', netsuite_account_id: '202', netsuite_account_name: 'Office Supplies' },
@@ -329,19 +327,15 @@ async function runDemo() {
 
     success(`${inv.id} (${inv.invoice_number}) → NS Vendor Bill #${nsBillId}`);
 
-    // Show the mapped expense lines with tax amounts
-    if (bill.expense?.items) {
-      for (const line of bill.expense.items) {
-        const acctName = (netsuiteAccounts as Record<string, { name: string }>)[line.account.id]?.name || line.account.id;
-        const taxCodeName = line.taxCode
-          ? (netsuiteTaxCodes as Record<string, { name: string }>)[line.taxCode.id]?.name || line.taxCode.id
-          : 'none';
-        const taxAmtStr = line.taxAmount !== undefined ? `${line.taxAmount}` : '-';
-        info(`    → Account: ${acctName} (${line.account.id}) | Net: ${line.amount} | ${BOLD}VAT: ${taxAmtStr}${RESET} | Tax Code: ${taxCodeName}`);
-      }
-      const totalNet = bill.expense.items.reduce((s, l) => s + l.amount, 0);
-      const totalVat = bill.expense.items.reduce((s, l) => s + (l.taxAmount || 0), 0);
-      info(`    ${DIM}── Total Net: ${totalNet} | Total VAT: ${totalVat} | Grand Total: ${totalNet + totalVat}${RESET}`);
+    // Show the single expense line (CorpayOne gives invoice-level totals only)
+    if (bill.expense?.items[0]) {
+      const line = bill.expense.items[0];
+      const acctName = (netsuiteAccounts as Record<string, { name: string }>)[line.account.id]?.name || line.account.id;
+      const taxCodeName = line.taxCode
+        ? (netsuiteTaxCodes as Record<string, { name: string }>)[line.taxCode.id]?.name || line.taxCode.id
+        : 'none';
+      const taxAmtStr = line.taxAmount !== undefined ? `${line.taxAmount}` : '-';
+      info(`    → Account: ${acctName} (${line.account.id}) | Net: ${line.amount} | ${BOLD}VAT: ${taxAmtStr}${RESET} | Tax Code: ${taxCodeName} | Total: ${inv.total_amount}`);
     }
     if (bill.subsidiary) {
       const subName = netsuiteSubsidiaries[bill.subsidiary.id as keyof typeof netsuiteSubsidiaries]?.name || bill.subsidiary.id;

@@ -1,6 +1,8 @@
 /**
  * Mock data representing realistic CorpayOne invoices, payments, and vendors,
  * and their expected NetSuite counterparts.
+ *
+ * Note: CorpayOne's API only returns invoice-level totals — no line items.
  */
 import type { CorpayOneInvoice, CorpayOnePayment, CorpayOneVendor } from '../src/types/corpayone';
 
@@ -80,30 +82,7 @@ export const invoices: CorpayOneInvoice[] = [
     description: 'IT Equipment - Q1 2025',
     reference: 'PO-2025-101',
     po_number: 'PO-2025-101',
-    line_items: [
-      {
-        id: 'li-1',
-        description: 'Dell Latitude 5550 Laptop',
-        quantity: 2,
-        unit_price: 3000,
-        amount: 6000,
-        vat_amount: 1500,
-        vat_rate: 25,
-        account_code: '5010',
-        category: 'IT Equipment',
-      },
-      {
-        id: 'li-2',
-        description: 'Logitech MX Master 3S Mouse',
-        quantity: 4,
-        unit_price: 500,
-        amount: 2000,
-        vat_amount: 500,
-        vat_rate: 25,
-        account_code: '5020',
-        category: 'Office Supplies',
-      },
-    ],
+    category: 'IT Equipment',
     labels: ['IT', 'Q1-2025'],
     created_at: '2025-02-15T09:00:00Z',
     updated_at: '2025-02-16T11:30:00Z',
@@ -120,30 +99,7 @@ export const invoices: CorpayOneInvoice[] = [
     due_date: '2025-04-01T00:00:00Z',
     invoice_date: '2025-03-01T00:00:00Z',
     description: 'Cloud hosting services - March 2025',
-    line_items: [
-      {
-        id: 'li-3',
-        description: 'Dedicated server (monthly)',
-        quantity: 1,
-        unit_price: 1500,
-        amount: 1500,
-        vat_amount: 285,
-        vat_rate: 19,
-        account_code: '6100',
-        category: 'Cloud Services',
-      },
-      {
-        id: 'li-4',
-        description: 'CDN bandwidth overage',
-        quantity: 1,
-        unit_price: 1000,
-        amount: 1000,
-        vat_amount: 190,
-        vat_rate: 19,
-        account_code: '6100',
-        category: 'Cloud Services',
-      },
-    ],
+    category: 'Cloud Services',
     labels: ['Infrastructure'],
     created_at: '2025-03-01T08:00:00Z',
     updated_at: '2025-03-02T10:00:00Z',
@@ -160,19 +116,7 @@ export const invoices: CorpayOneInvoice[] = [
     due_date: '2025-03-20T00:00:00Z',
     invoice_date: '2025-02-20T00:00:00Z',
     description: 'Office furniture delivery',
-    line_items: [
-      {
-        id: 'li-5',
-        description: 'Standing desk - Flexispot E7',
-        quantity: 2,
-        unit_price: 600,
-        amount: 1200,
-        vat_amount: 240,
-        vat_rate: 20,
-        account_code: '5030',
-        category: 'Office Furniture',
-      },
-    ],
+    category: 'Office Furniture',
     created_at: '2025-02-20T14:00:00Z',
     updated_at: '2025-03-18T09:00:00Z',
   },
@@ -188,7 +132,6 @@ export const invoices: CorpayOneInvoice[] = [
     due_date: '2025-04-15T00:00:00Z',
     invoice_date: '2025-03-15T00:00:00Z',
     description: 'Miscellaneous supplies (draft)',
-    line_items: [],
     created_at: '2025-03-15T12:00:00Z',
     updated_at: '2025-03-15T12:00:00Z',
   },

@@ -62,18 +62,7 @@ const mockInvoice: CorpayOneInvoice = {
   description: 'Consulting services',
   reference: 'REF-123',
   po_number: 'PO-456',
-  line_items: [
-    {
-      id: 'line-001',
-      description: 'Consulting Q1',
-      quantity: 10,
-      unit_price: 800,
-      amount: 8000,
-      vat_amount: 2000,
-      vat_rate: 25,
-      account_code: '5000',
-    },
-  ],
+  category: 'Consulting',
   created_at: '2025-02-01T00:00:00Z',
   updated_at: '2025-02-01T00:00:00Z',
 };
@@ -107,35 +96,38 @@ describe('mapInvoiceToVendorBill', () => {
     expect(result.memo).toContain('[CorpayOne: inv-001]');
   });
 
-  it('should map line items to expense lines', () => {
+  it('should always create exactly one expense line from invoice totals', () => {
     const result = mapInvoiceToVendorBill(mockInvoice, '42');
 
     expect(result.expense?.items).toHaveLength(1);
-    // With mapping-db mocked to return undefined, falls back to using
-    // the line item's account_code directly via static config fallback
-    expect(result.expense?.items[0].amount).toBe(8000);
-    expect(result.expense?.items[0].memo).toBe('Consulting Q1');
+    expect(result.expense?.items[0].amount).toBe(8000); // subtotal
+    expect(result.expense?.items[0].taxAmount).toBe(2000); // vat_amount
+    expect(result.expense?.items[0].memo).toBe('Consulting services');
   });
 
-  it('should create a single expense line when no line items exist', () => {
-    const invoiceNoLines = { ...mockInvoice, line_items: [] };
-    const result = mapInvoiceToVendorBill(invoiceNoLines, '42');
+  it('should use AP account as fallback when no mapping exists', () => {
+    const result = mapInvoiceToVendorBill(mockInvoice, '42');
+
+    expect(result.expense?.items[0].account).toEqual({ id: '200' });
+  });
+
+  it('should compute implied VAT rate for tax code lookup', () => {
+    // 2000 / 8000 = 25% → should attempt to resolve tax code for 25%
+    const result = mapInvoiceToVendorBill(mockInvoice, '42');
+
+    // With mocked mapping-db returning undefined, no taxCode is set
+    expect(result.expense?.items[0].taxCode).toBeUndefined();
+    // But taxAmount is always passed through
+    expect(result.expense?.items[0].taxAmount).toBe(2000);
+  });
+
+  it('should handle invoice with zero VAT', () => {
+    const noVatInvoice = { ...mockInvoice, vat_amount: 0, total_amount: 8000 };
+    const result = mapInvoiceToVendorBill(noVatInvoice, '42');
 
     expect(result.expense?.items).toHaveLength(1);
-    expect(result.expense?.items[0].amount).toBe(10000);
-    expect(result.expense?.items[0].account).toEqual({ id: '200' });
-  });
-
-  it('should use AP account when line item has no account code', () => {
-    const invoiceNoAccount = {
-      ...mockInvoice,
-      line_items: [
-        { ...mockInvoice.line_items[0], account_code: undefined },
-      ],
-    };
-    const result = mapInvoiceToVendorBill(invoiceNoAccount, '42');
-
-    expect(result.expense?.items[0].account).toEqual({ id: '200' });
+    expect(result.expense?.items[0].amount).toBe(8000);
+    expect(result.expense?.items[0].taxAmount).toBeUndefined();
   });
 });
 
