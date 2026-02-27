@@ -1,0 +1,47 @@
+name: Deploy to Azure Functions
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: # Allow manual trigger from GitHub UI
+
+env:
+  AZURE_FUNCTIONAPP_NAME: 'corpayone-netsuite-sync' # Change this to your function app name
+  NODE_VERSION: '22.x'
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build TypeScript
+        run: npm run build
+
+      - name: Copy Azure Functions config
+        run: |
+          cp azure/host.json dist/
+          cp azure/package.json dist/ 2>/dev/null || true
+
+      - name: Install production dependencies in dist
+        run: |
+          cd dist
+          npm install --production 2>/dev/null || true
+
+      - name: Deploy to Azure Functions
+        uses: Azure/functions-action@v1
+        with:
+          app-name: ${{ env.AZURE_FUNCTIONAPP_NAME }}
+          package: './dist'
+          publish-profile: ${{ secrets.AZURE_FUNCTIONAPP_PUBLISH_PROFILE }}
