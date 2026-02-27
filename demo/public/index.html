@@ -1,0 +1,709 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CorpayOne → NetSuite Integration Demo</title>
+  <style>
+    /* ── Reset & base ─────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0d1117;
+      --surface:   #161b22;
+      --border:    #30363d;
+      --text:      #e6edf3;
+      --muted:     #8b949e;
+      --blue:      #58a6ff;
+      --green:     #3fb950;
+      --yellow:    #d29922;
+      --red:       #f85149;
+      --purple:    #bc8cff;
+      --orange:    #ffa657;
+      --radius:    10px;
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-size: 14px;
+      line-height: 1.6;
+      min-height: 100vh;
+    }
+
+    /* ── Header ───────────────────────────────────────────────── */
+    header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 18px 32px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+
+    .header-title {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .header-title h1 {
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--text);
+    }
+
+    .badge {
+      background: #1f6feb33;
+      color: var(--blue);
+      border: 1px solid #1f6feb66;
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 20px;
+      font-weight: 500;
+    }
+
+    /* ── Pipeline diagram ─────────────────────────────────────── */
+    .pipeline {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0;
+      padding: 32px 32px 0;
+    }
+
+    .pipe-box {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px 22px;
+      text-align: center;
+      min-width: 140px;
+    }
+
+    .pipe-box .pipe-icon { font-size: 22px; margin-bottom: 4px; }
+    .pipe-box .pipe-name { font-size: 13px; font-weight: 600; color: var(--text); }
+    .pipe-box .pipe-sub  { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
+    .pipe-arrow {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 3px;
+      padding: 0 8px;
+    }
+
+    .pipe-arrow-line {
+      width: 60px;
+      height: 2px;
+      background: linear-gradient(90deg, var(--border), var(--blue));
+    }
+
+    .pipe-arrow-label {
+      font-size: 10px;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+
+    .pipe-arrow-head {
+      font-size: 16px;
+      color: var(--blue);
+      margin-left: 44px;
+      margin-top: -14px;
+    }
+
+    /* ── Main layout ──────────────────────────────────────────── */
+    main {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 24px 24px 64px;
+    }
+
+    /* ── Hero ─────────────────────────────────────────────────── */
+    .hero {
+      text-align: center;
+      padding: 32px 0 8px;
+    }
+
+    .hero h2 {
+      font-size: 22px;
+      font-weight: 700;
+      color: var(--text);
+      margin-bottom: 8px;
+    }
+
+    .hero p {
+      color: var(--muted);
+      font-size: 14px;
+      margin-bottom: 24px;
+    }
+
+    /* ── Run button ───────────────────────────────────────────── */
+    #runBtn {
+      background: var(--green);
+      color: #000;
+      border: none;
+      border-radius: var(--radius);
+      padding: 12px 32px;
+      font-size: 15px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: opacity 0.2s, transform 0.1s;
+      letter-spacing: 0.3px;
+    }
+
+    #runBtn:hover:not(:disabled) { opacity: 0.88; transform: translateY(-1px); }
+    #runBtn:active:not(:disabled) { transform: translateY(0); }
+    #runBtn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+    /* ── Progress bar ─────────────────────────────────────────── */
+    #progressWrap {
+      margin: 20px 0 0;
+      display: none;
+    }
+
+    #progressBar {
+      height: 3px;
+      background: var(--border);
+      border-radius: 99px;
+      overflow: hidden;
+    }
+
+    #progressFill {
+      height: 100%;
+      background: linear-gradient(90deg, var(--blue), var(--purple));
+      width: 0%;
+      transition: width 0.4s ease;
+    }
+
+    #progressLabel {
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 6px;
+      text-align: center;
+    }
+
+    /* ── Steps container ──────────────────────────────────────── */
+    #steps { margin-top: 24px; display: flex; flex-direction: column; gap: 12px; }
+
+    /* ── Step card ────────────────────────────────────────────── */
+    .step-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      animation: fadeIn 0.3s ease;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(8px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    .step-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 14px 18px;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .step-number {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      background: var(--border);
+      color: var(--muted);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 12px;
+      font-weight: 700;
+      flex-shrink: 0;
+      transition: background 0.3s, color 0.3s;
+    }
+
+    .step-card.running .step-number  { background: #1f6feb33; color: var(--blue); animation: pulse 1.2s infinite; }
+    .step-card.done    .step-number  { background: #238636; color: #fff; }
+    .step-card.running .step-header  { border-bottom: 1px solid var(--border); }
+    .step-card.done    .step-header  { border-bottom: 1px solid var(--border); }
+
+    @keyframes pulse {
+      0%, 100% { box-shadow: 0 0 0 0 #1f6feb44; }
+      50%       { box-shadow: 0 0 0 6px #1f6feb11; }
+    }
+
+    .step-title {
+      font-weight: 600;
+      font-size: 14px;
+      flex: 1;
+    }
+
+    .step-status-badge {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 20px;
+      font-weight: 500;
+    }
+
+    .status-pending  { background: #21262d; color: var(--muted); }
+    .status-running  { background: #1f6feb22; color: var(--blue); }
+    .status-done     { background: #23863633; color: var(--green); }
+
+    .step-chevron {
+      color: var(--muted);
+      font-size: 12px;
+      transition: transform 0.2s;
+    }
+
+    .step-card.collapsed .step-chevron { transform: rotate(-90deg); }
+
+    /* ── Step body / log ──────────────────────────────────────── */
+    .step-body {
+      padding: 12px 18px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+
+    .step-card.collapsed .step-body { display: none; }
+
+    /* ── Log entries ──────────────────────────────────────────── */
+    .log-entry {
+      display: flex;
+      gap: 8px;
+      align-items: flex-start;
+      font-size: 13px;
+      animation: fadeIn 0.2s ease;
+      font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+    }
+
+    .log-icon  { flex-shrink: 0; width: 16px; text-align: center; }
+    .log-text  { color: var(--text); word-break: break-word; }
+
+    .log-entry.success .log-icon { color: var(--green); }
+    .log-entry.success .log-text { color: var(--text); }
+
+    .log-entry.info    .log-icon { color: var(--muted); }
+    .log-entry.info    .log-text { color: var(--muted); }
+
+    .log-entry.warn    .log-icon { color: var(--yellow); }
+    .log-entry.warn    .log-text { color: var(--yellow); }
+
+    .log-entry.skip    .log-icon { color: var(--muted); }
+    .log-entry.skip    .log-text { color: var(--muted); text-decoration: line-through; opacity: 0.7; }
+
+    /* ── Table ────────────────────────────────────────────────── */
+    .table-wrap {
+      margin-top: 8px;
+      overflow-x: auto;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      animation: fadeIn 0.3s ease;
+    }
+
+    .table-label {
+      background: #21262d;
+      padding: 7px 12px;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--muted);
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+      border-bottom: 1px solid var(--border);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+      font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+    }
+
+    th {
+      background: #21262d;
+      color: var(--muted);
+      font-weight: 600;
+      text-align: left;
+      padding: 8px 12px;
+      font-size: 11px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    td {
+      padding: 7px 12px;
+      border-bottom: 1px solid #21262d;
+      color: var(--text);
+    }
+
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: #ffffff08; }
+
+    /* State badges in table */
+    .state-booked    { color: var(--blue); }
+    .state-paid      { color: var(--green); }
+    .state-awaiting  { color: var(--yellow); }
+    .state-pending   { color: var(--muted); }
+    .state-cancelled { color: var(--red); }
+
+    /* ── Summary card ─────────────────────────────────────────── */
+    #summaryCard {
+      background: var(--surface);
+      border: 1px solid var(--green);
+      border-radius: var(--radius);
+      padding: 24px;
+      margin-top: 16px;
+      animation: fadeIn 0.4s ease;
+      display: none;
+    }
+
+    #summaryCard h3 {
+      color: var(--green);
+      font-size: 16px;
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+
+    .summary-stat {
+      background: #21262d;
+      border-radius: 8px;
+      padding: 14px 16px;
+      text-align: center;
+    }
+
+    .summary-stat .stat-value {
+      font-size: 28px;
+      font-weight: 700;
+      color: var(--blue);
+      line-height: 1;
+    }
+
+    .summary-stat .stat-label {
+      font-size: 11px;
+      color: var(--muted);
+      margin-top: 4px;
+    }
+
+    .summary-note {
+      background: #21262d;
+      border-radius: 8px;
+      padding: 12px 16px;
+      font-size: 13px;
+      color: var(--muted);
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .summary-note span { display: flex; align-items: center; gap: 8px; }
+    .summary-note .dot { color: var(--blue); }
+
+    /* ── Error card ───────────────────────────────────────────── */
+    #errorCard {
+      background: #2d1117;
+      border: 1px solid var(--red);
+      border-radius: var(--radius);
+      padding: 16px;
+      margin-top: 16px;
+      display: none;
+      color: var(--red);
+      font-family: monospace;
+      font-size: 13px;
+    }
+
+    /* ── Spinner ──────────────────────────────────────────────── */
+    .spinner {
+      display: inline-block;
+      width: 12px;
+      height: 12px;
+      border: 2px solid var(--border);
+      border-top-color: var(--blue);
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      margin-left: 4px;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Scrollbar ────────────────────────────────────────────── */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  </style>
+</head>
+<body>
+
+<!-- ── Header ──────────────────────────────────────────────────────── -->
+<header>
+  <div class="header-title">
+    <h1>CorpayOne → NetSuite Integration</h1>
+    <span class="badge">Demo</span>
+  </div>
+  <button id="runBtn" onclick="startDemo()">▶ Run Demo</button>
+</header>
+
+<!-- ── Pipeline diagram ────────────────────────────────────────────── -->
+<div class="pipeline">
+  <div class="pipe-box">
+    <div class="pipe-icon">🏦</div>
+    <div class="pipe-name">CorpayOne</div>
+    <div class="pipe-sub">v3 API · Read-only</div>
+  </div>
+
+  <div class="pipe-arrow">
+    <div class="pipe-arrow-label">Expenses · Payments</div>
+    <div class="pipe-arrow-line"></div>
+    <div class="pipe-arrow-head">▶</div>
+  </div>
+
+  <div class="pipe-box" style="border-color: #1f6feb66;">
+    <div class="pipe-icon">⚙️</div>
+    <div class="pipe-name">Integration</div>
+    <div class="pipe-sub">Azure Function · 15 min</div>
+  </div>
+
+  <div class="pipe-arrow">
+    <div class="pipe-arrow-label">Vendors · Bills · Payments</div>
+    <div class="pipe-arrow-line"></div>
+    <div class="pipe-arrow-head">▶</div>
+  </div>
+
+  <div class="pipe-box">
+    <div class="pipe-icon">📊</div>
+    <div class="pipe-name">NetSuite</div>
+    <div class="pipe-sub">SuiteQL · REST API</div>
+  </div>
+</div>
+
+<!-- ── Main content ─────────────────────────────────────────────────── -->
+<main>
+  <div class="hero">
+    <h2>Full Integration Flow</h2>
+    <p>Simulates all 6 steps using mock data — no real credentials needed.</p>
+  </div>
+
+  <!-- Progress bar -->
+  <div id="progressWrap">
+    <div id="progressBar"><div id="progressFill"></div></div>
+    <div id="progressLabel">Starting…</div>
+  </div>
+
+  <!-- Steps will appear here -->
+  <div id="steps"></div>
+
+  <!-- Summary card (shown at end) -->
+  <div id="summaryCard">
+    <h3>✅ Demo Complete — All Steps Succeeded</h3>
+    <div class="summary-grid" id="summaryGrid"></div>
+    <div class="summary-note">
+      <span><span class="dot">●</span> In production, this flow runs automatically via Azure Function every 15 minutes</span>
+      <span><span class="dot">●</span> Pull-based only — no incoming traffic, no open endpoints</span>
+      <span><span class="dot">●</span> NetSuite Suitelet dashboard is used for mapping configuration</span>
+    </div>
+  </div>
+
+  <!-- Error card -->
+  <div id="errorCard"></div>
+</main>
+
+<script>
+  const TOTAL_STEPS = 6;
+  let currentStep = null;
+  let stepCards = {};
+
+  function startDemo() {
+    const btn = document.getElementById('runBtn');
+    btn.disabled = true;
+    btn.textContent = 'Running…';
+
+    document.getElementById('steps').innerHTML = '';
+    document.getElementById('summaryCard').style.display = 'none';
+    document.getElementById('errorCard').style.display = 'none';
+
+    const progressWrap = document.getElementById('progressWrap');
+    progressWrap.style.display = 'block';
+    setProgress(0, 'Starting…');
+
+    stepCards = {};
+    currentStep = null;
+
+    const es = new EventSource('/api/demo/run');
+
+    es.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      handle(data, es);
+    };
+
+    es.onerror = () => {
+      es.close();
+      btn.disabled = false;
+      btn.textContent = '▶ Run Again';
+    };
+  }
+
+  function handle(data, es) {
+    switch (data.type) {
+      case 'step':       onStep(data); break;
+      case 'step_done':  onStepDone(data); break;
+      case 'success':    addLog('success', '✓', data.text); break;
+      case 'info':       addLog('info', '·', data.text); break;
+      case 'warn':       addLog('warn', '⚠', data.text); break;
+      case 'skip':       addLog('skip', '⊘', data.text); break;
+      case 'table':      addTable(data); break;
+      case 'summary':    showSummary(data); break;
+      case 'done':       onDone(es); break;
+      case 'error':      onError(data.message, es); break;
+    }
+  }
+
+  function onStep(data) {
+    currentStep = data.step;
+    setProgress((data.step - 1) / TOTAL_STEPS * 100, `Step ${data.step} of ${TOTAL_STEPS}: ${data.title}`);
+
+    const card = document.createElement('div');
+    card.className = 'step-card running';
+    card.id = `step-${data.step}`;
+    card.innerHTML = `
+      <div class="step-header" onclick="toggleStep(${data.step})">
+        <div class="step-number">${data.step}</div>
+        <div class="step-title">${data.title}</div>
+        <span class="step-status-badge status-running">Running <span class="spinner"></span></span>
+        <span class="step-chevron">▼</span>
+      </div>
+      <div class="step-body" id="body-${data.step}"></div>
+    `;
+
+    document.getElementById('steps').appendChild(card);
+    card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    stepCards[data.step] = card;
+  }
+
+  function onStepDone(data) {
+    const card = stepCards[data.step];
+    if (!card) return;
+    card.classList.remove('running');
+    card.classList.add('done');
+    const badge = card.querySelector('.step-status-badge');
+    badge.className = 'step-status-badge status-done';
+    badge.textContent = '✓ Done';
+    setProgress(data.step / TOTAL_STEPS * 100, data.step < TOTAL_STEPS ? `Step ${data.step + 1} of ${TOTAL_STEPS}…` : 'Finishing…');
+  }
+
+  function onDone(es) {
+    es.close();
+    setProgress(100, 'Complete!');
+    document.getElementById('summaryCard').style.display = 'block';
+    document.getElementById('summaryCard').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    const btn = document.getElementById('runBtn');
+    btn.disabled = false;
+    btn.textContent = '▶ Run Again';
+  }
+
+  function onError(msg, es) {
+    es.close();
+    const el = document.getElementById('errorCard');
+    el.style.display = 'block';
+    el.textContent = '❌ Error: ' + msg;
+    const btn = document.getElementById('runBtn');
+    btn.disabled = false;
+    btn.textContent = '▶ Run Again';
+  }
+
+  function addLog(type, icon, text) {
+    if (!currentStep) return;
+    const body = document.getElementById(`body-${currentStep}`);
+    if (!body) return;
+    const el = document.createElement('div');
+    el.className = `log-entry ${type}`;
+    el.innerHTML = `<span class="log-icon">${icon}</span><span class="log-text">${escHtml(text)}</span>`;
+    body.appendChild(el);
+  }
+
+  function addTable(data) {
+    if (!currentStep) return;
+    const body = document.getElementById(`body-${currentStep}`);
+    if (!body) return;
+
+    const wrap = document.createElement('div');
+    wrap.className = 'table-wrap';
+
+    let html = '';
+    if (data.label) html += `<div class="table-label">${escHtml(data.label)}</div>`;
+    html += '<table><thead><tr>';
+    for (const h of data.headers) html += `<th>${escHtml(h)}</th>`;
+    html += '</tr></thead><tbody>';
+
+    for (const row of data.rows) {
+      html += '<tr>';
+      row.forEach((cell, i) => {
+        if (i === data.stateCol) {
+          const cls = 'state-' + String(cell).toLowerCase();
+          html += `<td><span class="${cls}">${escHtml(String(cell))}</span></td>`;
+        } else {
+          html += `<td>${escHtml(String(cell))}</td>`;
+        }
+      });
+      html += '</tr>';
+    }
+
+    html += '</tbody></table>';
+    wrap.innerHTML = html;
+    body.appendChild(wrap);
+  }
+
+  function showSummary(data) {
+    const grid = document.getElementById('summaryGrid');
+    const stats = [
+      { value: data.vendorsSynced,   label: 'Vendors Synced' },
+      { value: data.billsSynced,     label: 'Bills Synced' },
+      { value: data.paymentsSynced,  label: 'Payments Synced' },
+      { value: data.accountMappings, label: 'Account Maps' },
+      { value: data.taxCodeMappings, label: 'Tax Code Maps' },
+      { value: data.bankAccounts,    label: 'Bank Accounts' },
+    ];
+    grid.innerHTML = stats.map(s => `
+      <div class="summary-stat">
+        <div class="stat-value">${s.value}</div>
+        <div class="stat-label">${s.label}</div>
+      </div>
+    `).join('');
+  }
+
+  function toggleStep(stepNum) {
+    const card = stepCards[stepNum];
+    if (!card) return;
+    if (card.classList.contains('running')) return; // don't collapse active step
+    card.classList.toggle('collapsed');
+  }
+
+  function setProgress(pct, label) {
+    document.getElementById('progressFill').style.width = pct + '%';
+    document.getElementById('progressLabel').textContent = label;
+  }
+
+  function escHtml(str) {
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+</script>
+</body>
+</html>

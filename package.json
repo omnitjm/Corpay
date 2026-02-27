@@ -11,7 +11,9 @@
     "lint": "eslint src/ --ext .ts",
     "migrate": "ts-node src/database/migrate.ts",
     "azure:start": "cd azure && func start",
-    "azure:build": "tsc && cp azure/host.json dist/"
+    "azure:build": "tsc && cp azure/host.json dist/",
+    "demo": "npx ts-node demo/run-demo.ts",
+    "demo:web": "npx ts-node demo/web-server.ts"
   },
   "keywords": [
     "corpayone",
