@@ -13,14 +13,34 @@ On each pass it reads Corpay One expenses and upserts into NetSuite:
 
 | Corpay One | NetSuite record | External id | Notes |
 |---|---|---|---|
-| Expense `Type=Bill` | Vendor Bill | `corpay-bill-{id}` | `PUT eid:` upsert |
-| Expense `Type=Creditnote` | Vendor Credit | `corpay-credit-{id}` | `PUT eid:` upsert; left **unapplied** (stays open on the vendor) |
+| Expense `Type=Bill` | Vendor Bill | `corpay-bill-{id}` | `PUT eid:` upsert; `approvalStatus=Approved` |
+| Expense `Type=Creditnote` | Vendor Credit | `corpay-credit-{id}` | `PUT eid:` upsert; left **unapplied** (stays open on the vendor). No `approvalStatus` — that field exists only on bills |
 | Bill that is paid (`state=Paid` / `friendlyStatus` `Paid`/`MarkedAsPaid`, with a `paymentDate`) | Vendor Payment | `corpay-pay-{id}` | Created once, **never updated**; applied to the bill it belongs to |
 
-Amounts are converted from Corpay minor units (øre/cents) to major units
-(divided by 100). Every expense line is posted with the default tax code (the
-account uses the DK legacy tax engine, so line-level tax codes are effectively
-mandatory).
+### Amounts are gross (VAT-inclusive)
+
+Corpay amounts are the **payable invoice total** including VAT; lines are gross
+splits of it. Each line is posted as **`grossAmt`** with the default tax code, so
+NetSuite back-computes the net and the **bill total equals the Corpay amount**.
+(Posting the net `amount` + a tax code would make NetSuite add VAT on top,
+overshooting the payable and leaving every bill ~25 % open after its payment.)
+Minor units (øre/cents) are converted to major units (divided by 100). The DK
+legacy tax engine makes line-level tax codes effectively mandatory, so every
+line carries `NS_DEFAULT_TAX_CODE_ID`.
+
+### Settled bills are skipped
+
+For a paid bill the first NetSuite call each run is a payment-existence check. If
+the payment already exists the bill is **settled** — it is logged as
+`SETTLED corpay-bill-{id}` and **not re-upserted** (counted under `settled`, not
+`bills`). This avoids a pointless write per settled bill per run and, more
+importantly, stops mutating a bill after it has been paid (a later Corpay edit
+could otherwise make the PUT fail forever). Unpaid/booked bills and open credits
+keep being upserted every run — that is the update mechanism.
+
+Check / virtual-card settlements (`friendlyStatus` `CheckIssued` / `VccIssued`)
+are not yet `Paid`, so no payment is created for them; the next run that sees
+Corpay transition the expense to `Paid` creates it. This self-heals via polling.
 
 ## Setup
 
@@ -77,6 +97,7 @@ fills in anything missing.
 | `CORPAY_REFRESH_TOKEN` | one of | – | For refresh-token grant |
 | `CORPAY_IDENTITY_URL` | no | `https://identity.corpayone.com` | Token endpoint host |
 | `CORPAY_SYNC_STATES` | no | `Booked,Initialized,Paid` | Comma-separated states to pull |
+| `CORPAY_LOOKBACK_DAYS` | no | `90` | Only sync expenses whose `paymentDate`/`referenceDate` is within the last N days. `0` = unlimited (scan all history). Bounds runtime as history grows |
 | `NS_ACCOUNT_ID` | **yes** | – | e.g. `1234567_SB1` |
 | `NS_CONSUMER_KEY` | **yes** | – | TBA integration consumer key |
 | `NS_CONSUMER_SECRET` | **yes** | – | TBA integration consumer secret |
@@ -100,7 +121,8 @@ npm test          # offline unit tests (stubbed fetch, no network)
 
 The process exits `1` if any expense errored during the pass, otherwise `0`.
 The final line is a summary, e.g.
-`SUMMARY bills=12 credits=1 payments=4 skipped=2 errors=0`.
+`SUMMARY bills=12 credits=1 payments=4 settled=8 skipped=2 errors=0`
+(`settled` = paid bills skipped because their payment already exists).
 
 ### Scheduling (cron)
 
@@ -113,23 +135,28 @@ line running every 15 minutes:
 
 ## Idempotency
 
-- Bills and credits use NetSuite **`eid:` upserts** (`PUT .../eid:corpay-bill-{id}`):
+- Unpaid bills and credits use NetSuite **`eid:` upserts** (`PUT .../eid:corpay-bill-{id}`):
   creating if absent, updating if present. Re-running a pass is harmless and
   keeps NetSuite in step with Corpay.
-- Payments are created **once and never updated**. Each pass first checks
-  `GET .../vendorPayment/eid:corpay-pay-{id}`; if it exists the payment is
-  skipped. This avoids ever mutating a settled payment.
+- Payments are created **once and never updated**. For a paid bill each pass
+  first checks `GET .../vendorPayment/eid:corpay-pay-{id}`; if it exists the bill
+  is **settled** and skipped without re-writing it (see *Settled bills are
+  skipped* above). This avoids ever mutating a settled bill or payment.
 
 ## Limitations
 
-- **Polling, not webhooks.** The tool lists expenses per `CORPAY_SYNC_STATES` on
-  each run; there is no push/webhook or incremental cursor.
+- **Polling, not webhooks.** The tool lists expenses per `CORPAY_SYNC_STATES`
+  (within `CORPAY_LOOKBACK_DAYS`) on each run; there is no push/webhook or
+  incremental cursor.
 - **Credits are left unapplied** — vendor credits are posted open on the
   vendor's AP; apply them to bills manually in NetSuite.
-- **Currency is taken from the vendor default.** No currency id is sent on
-  bills/credits, so each Corpay vendor's currency must match the currency on its
-  NetSuite vendor record. (Payments pick the bank account by currency via
-  `NS_BANK_ACCOUNT_ID_<CUR>`, falling back to `NS_BANK_ACCOUNT_ID`.)
+- **Currency is taken from the vendor default; no FX or partial payments.**
+  No currency id is sent on bills/credits, so each Corpay vendor's currency must
+  match the currency on its NetSuite vendor record. Payment/bill/credit amounts
+  are taken from `expense.amount` in the expense currency and the payment applies
+  the full amount — FX conversions and partial settlements are not modelled.
+  (Payments pick the bank account by currency via `NS_BANK_ACCOUNT_ID_<CUR>`,
+  falling back to `NS_BANK_ACCOUNT_ID`.)
 - **Closed posting periods surface as errors.** A bill dated in a
   closed/locked NetSuite period fails; it is logged as `ERROR` and left for
   manual handling (the run still exits `1`).
