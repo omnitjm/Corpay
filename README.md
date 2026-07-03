@@ -70,19 +70,44 @@ never deleted or voided automatically — reversing is a human decision.
      exchanges them for an access token at `{CORPAY_IDENTITY_URL}/connect/token`.
 4. Find your **Team id** (`CORPAY_TEAM_ID`).
 
-### 2. Vendor mapping — the `externalId` convention (required)
+### 2. How mapping is resolved (out of the box)
 
-The tool does **not** create or match vendors. For every Corpay vendor you want
-to sync, the **NetSuite vendor internal id must be stamped as the Corpay
-vendor's `externalId`**. Any bill/credit whose vendor has a missing or
-non-numeric `externalId` is **skipped** (logged, counted, pass continues).
+**Vendor → NetSuite vendor** (per expense, in order):
 
-Stamp it via the Corpay UI, or the API:
+1. The Corpay vendor's `externalId` holds a numeric NetSuite internal id → used directly.
+2. **Auto-match by CVR/VAT number** (`CORPAY_VENDOR_AUTOMATCH`, on by default): the
+   Corpay vendor's `identification` is compared digits-only against NetSuite
+   `vatregnumber`. A unique hit wins.
+3. **Auto-match by exact company name** (case/whitespace-insensitive). A unique
+   hit wins; multiple same-name vendors → skip (ambiguous).
+4. Otherwise the document is **skipped** with an actionable log line.
 
-```
-PATCH /external/v2/teams/{teamId}/vendors/{vendorId}/external-id
-{ "source": "netsuite", "externalId": "742" }
-```
+A successful auto-match is **stamped back** onto the Corpay vendor
+(`PATCH .../vendors/{id}/external-id`, requires a vendor-write scope) so the
+next run resolves directly; without the scope it simply re-matches each run.
+Vendors are **never created** — that stays a deliberate human decision.
+
+**Expense line → GL account** (per line, in order):
+
+1. The Corpay category's `externalId` holds a numeric NetSuite account internal id.
+2. The category's **account number** (`category.number`, e.g. `2201`) is matched
+   against the NetSuite chart of accounts (`acctnumber`) — this is the normal
+   out-of-the-box path, since Corpay categories carry the account numbers of the
+   connected accounting system.
+3. Otherwise `NS_DEFAULT_EXPENSE_ACCOUNT_ID` (noted once per category in the log).
+
+**Subsidiary**: one Corpay team = one legal entity = **one configuration** with a
+fixed `NS_SUBSIDIARY_ID`. A customer with several subsidiaries runs one sync
+setup per team/subsidiary pair. The subsidiary (and every configured account)
+is verified by the preflight check below before anything is written.
+
+### Preflight — fail fast on misconfiguration
+
+Every run starts by validating the NetSuite side: auth works, the subsidiary
+exists, `NS_AP_ACCOUNT_ID` is an Accounts Payable account, bank accounts are
+Bank accounts, and nothing configured is inactive. Problems abort the run with
+**one message listing every issue** — no cryptic per-document errors from a bad
+config.
 
 ### 3. NetSuite integration + Token-Based Authentication (TBA)
 
@@ -113,6 +138,7 @@ fills in anything missing.
 | `CORPAY_IDENTITY_URL` | no | `https://identity.corpayone.com` | Token endpoint host |
 | `CORPAY_SYNC_STATES` | no | `Booked,Initialized,Paid` | Comma-separated states to pull |
 | `CORPAY_LOOKBACK_DAYS` | no | `90` | Only sync expenses whose `paymentDate`/`referenceDate` is within the last N days. `0` = unlimited (scan all history). Bounds runtime as history grows |
+| `CORPAY_VENDOR_AUTOMATCH` | no | `true` | Auto-match unstamped vendors by CVR, then exact name, and stamp the match back. `false` = require manual stamping |
 | `NS_ACCOUNT_ID` | **yes** | – | e.g. `1234567_SB1` |
 | `NS_CONSUMER_KEY` | **yes** | – | TBA integration consumer key |
 | `NS_CONSUMER_SECRET` | **yes** | – | TBA integration consumer secret |

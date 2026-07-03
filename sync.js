@@ -105,6 +105,9 @@ export function loadConfig(env = loadEnv()) {
       teamId,
       syncStates,
       lookbackDays,
+      // Auto-match unstamped Corpay vendors against NetSuite (CVR, then exact name)
+      // and stamp the match back. 'false' disables and restores skip-only behavior.
+      vendorAutomatch: env.CORPAY_VENDOR_AUTOMATCH !== 'false',
     },
     ns: {
       accountId: ns.NS_ACCOUNT_ID,
@@ -242,6 +245,18 @@ async function getExpense(fetchImpl, c, id) {
   return resp?.data;
 }
 
+// Best-effort write back to Corpay (used to stamp matched vendors). Throws on failure;
+// callers decide whether that is fatal (for stamping it never is).
+async function corpayPatch(fetchImpl, c, path, body) {
+  await sleep(150);
+  const res = await fetchImpl(c.baseUrl + path, {
+    method: 'PATCH',
+    headers: { Authorization: `Bearer ${c.token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`Corpay PATCH ${path} -> ${res.status}`);
+}
+
 // -------------------- NetSuite client (OAuth 1.0a TBA) --------------------
 
 // RFC3986 percent-encoding: encodeURIComponent plus the four chars it leaves alone.
@@ -283,15 +298,33 @@ function nsAuthHeader(cfg, method, url) {
   return `OAuth realm="${rfc3986(cfg.accountId.toUpperCase())}", ${kv}`;
 }
 
-async function nsRequest(fetchImpl, cfg, method, path, body) {
+async function nsRequest(fetchImpl, cfg, method, path, body, extraHeaders) {
   const url = nsBase(cfg.accountId) + path;
-  const headers = { Authorization: nsAuthHeader(cfg, method, url) };
+  const headers = { Authorization: nsAuthHeader(cfg, method, url), ...(extraHeaders || {}) };
   let payload;
   if (body != null) {
     headers['Content-Type'] = 'application/json';
     payload = JSON.stringify(body);
   }
   return fetchImpl(url, { method, headers, body: payload });
+}
+
+// Run a SuiteQL query (paginated) and return all rows.
+async function nsSuiteQL(fetchImpl, cfg, q) {
+  const rows = [];
+  let offset = 0;
+  for (;;) {
+    const res = await nsRequest(fetchImpl, cfg, 'POST',
+      `/query/v1/suiteql?limit=1000&offset=${offset}`, { q }, { Prefer: 'transient' });
+    if (!res.ok) {
+      throw new Error(`NetSuite SuiteQL -> ${res.status}: ${await nsErrorText(res)}`);
+    }
+    const body = await res.json();
+    const items = body?.items || [];
+    rows.push(...items);
+    if (!body?.hasMore || items.length === 0) return rows;
+    offset += items.length;
+  }
 }
 
 async function nsErrorText(res) {
@@ -328,6 +361,166 @@ async function nsGetInternalId(fetchImpl, cfg, path) {
   return body?.id != null ? String(body.id) : null;
 }
 
+// -------------------- preflight --------------------
+
+// Validate the NetSuite side of the configuration BEFORE touching any documents, so a
+// misconfiguration produces ONE clear, actionable message instead of a wall of cryptic
+// per-expense errors. Verifies auth, the subsidiary and every configured account.
+async function preflight(fetchImpl, ns) {
+  const accountIds = dedupe(
+    [ns.apAccountId, ns.bankAccountId, ns.defaultExpenseAccountId,
+      ...Object.values(ns.bankAccountByCurrency)]
+      .map((id) => Number(id)).filter(Number.isFinite),
+  );
+  let accounts;
+  let subs;
+  try {
+    accounts = await nsSuiteQL(fetchImpl, ns,
+      `SELECT id, accttype, isinactive FROM account WHERE id IN (${accountIds.join(', ')})`);
+    subs = await nsSuiteQL(fetchImpl, ns,
+      `SELECT id FROM subsidiary WHERE id = ${Number(ns.subsidiaryId)}`);
+  } catch (e) {
+    throw new Error(`PREFLIGHT: cannot query NetSuite (${e.message}) — check NS_ACCOUNT_ID and the four TBA keys`);
+  }
+
+  const byId = {};
+  for (const a of accounts) byId[String(a.id)] = a;
+  const problems = [];
+  const check = (id, label, expectedType) => {
+    const a = byId[String(id)];
+    if (!a) { problems.push(`${label}=${id}: account not found in NetSuite`); return; }
+    if (String(a.isinactive).toUpperCase() === 'T') problems.push(`${label}=${id}: account is inactive`);
+    if (expectedType && a.accttype !== expectedType) {
+      problems.push(`${label}=${id}: expected an ${expectedType} account, got ${a.accttype}`);
+    }
+  };
+  check(ns.apAccountId, 'NS_AP_ACCOUNT_ID', 'AcctPay');
+  check(ns.bankAccountId, 'NS_BANK_ACCOUNT_ID', 'Bank');
+  for (const [cur, id] of Object.entries(ns.bankAccountByCurrency)) {
+    check(id, `NS_BANK_ACCOUNT_ID_${cur}`, 'Bank');
+  }
+  check(ns.defaultExpenseAccountId, 'NS_DEFAULT_EXPENSE_ACCOUNT_ID', null);
+  if (subs.length === 0) problems.push(`NS_SUBSIDIARY_ID=${ns.subsidiaryId}: subsidiary not found (positive internal id required)`);
+
+  if (problems.length) {
+    throw new Error('PREFLIGHT failed — fix the configuration:\n  ' + problems.join('\n  '));
+  }
+  console.log('PREFLIGHT ok (NetSuite auth, subsidiary and accounts verified)');
+}
+
+// -------------------- per-run lookup caches --------------------
+
+const digitsOnly = (s) => String(s || '').replace(/\D/g, '');
+const normName = (s) => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
+
+// NetSuite chart of accounts: acctnumber -> internal id (fetched once per run).
+async function getAccountMap(ctx) {
+  if (!ctx.accountMap) {
+    const rows = await nsSuiteQL(ctx.fetchImpl, ctx.ns,
+      "SELECT id, acctnumber FROM account WHERE isinactive = 'F'");
+    ctx.accountMap = {};
+    for (const r of rows) {
+      if (r.acctnumber != null && String(r.acctnumber).trim() !== '') {
+        ctx.accountMap[String(r.acctnumber).trim()] = String(r.id);
+      }
+    }
+  }
+  return ctx.accountMap;
+}
+
+// Active NetSuite vendors for auto-matching (fetched once per run).
+async function getNsVendors(ctx) {
+  if (!ctx.nsVendors) {
+    ctx.nsVendors = await nsSuiteQL(ctx.fetchImpl, ctx.ns,
+      "SELECT id, companyname, vatregnumber FROM vendor WHERE isinactive = 'F'");
+  }
+  return ctx.nsVendors;
+}
+
+// Expense-account resolution chain: numeric category.externalId -> category.number matched
+// against the NetSuite chart of accounts -> default account (noted once per category).
+async function resolveAccount(ctx, category) {
+  const direct = numericId(category?.externalId);
+  if (direct) return direct;
+  const num = category?.number;
+  if (num != null && String(num).trim() !== '') {
+    const map = await getAccountMap(ctx);
+    const hit = map[String(num).trim()];
+    if (hit) return hit;
+  }
+  const key = `"${category?.name || '?'}" (${category?.number ?? '-'})`;
+  if (!ctx.notedCategories.has(key)) {
+    ctx.notedCategories.add(key);
+    console.log(`NOTE category ${key} not matched to a NetSuite account — using default`);
+  }
+  return ctx.ns.defaultExpenseAccountId;
+}
+
+// Vendor resolution chain: numeric vendor.externalId -> auto-match by CVR/VAT number ->
+// auto-match by exact (normalized) name -> skip loudly. A match is stamped back onto the
+// Corpay vendor (best effort) so subsequent runs resolve directly.
+async function resolveVendor(ctx, expense, kind) {
+  const direct = numericId(expense.vendor?.externalId);
+  if (direct) return direct;
+
+  const name = expense.vendor?.name || '';
+  const skip = (why) => {
+    ctx.stats.skipped++;
+    console.log(`SKIP ${kind} ${expense.id}: vendor "${name}" ${why} — set the NetSuite internal id as the vendor's externalId in Corpay One`);
+    return null;
+  };
+  if (!ctx.corpay.vendorAutomatch) return skip('has no numeric NetSuite externalId (automatch disabled)');
+
+  // Corpay vendor detail carries the CVR/VAT number ("identification"); cache per vendor.
+  const cvId = expense.vendor?.id;
+  let detail = null;
+  if (cvId != null) {
+    if (!(cvId in ctx.corpayVendorCache)) {
+      try {
+        const resp = await corpayGet(ctx.fetchImpl, ctx.corpay,
+          `/v2/teams/${ctx.corpay.teamId}/vendors/${cvId}`);
+        ctx.corpayVendorCache[cvId] = resp?.data || null;
+      } catch {
+        ctx.corpayVendorCache[cvId] = null;
+      }
+    }
+    detail = ctx.corpayVendorCache[cvId];
+  }
+
+  const vendors = await getNsVendors(ctx);
+  const cvr = digitsOnly(detail?.identification);
+  if (cvr) {
+    const hits = vendors.filter((v) => digitsOnly(v.vatregnumber) === cvr);
+    if (hits.length === 1) return vendorMatched(ctx, expense, hits[0], 'cvr');
+  }
+  const nm = normName(detail?.name || name);
+  if (nm) {
+    const hits = vendors.filter((v) => normName(v.companyname) === nm);
+    if (hits.length === 1) return vendorMatched(ctx, expense, hits[0], 'name');
+    if (hits.length > 1) return skip(`is ambiguous (${hits.length} NetSuite vendors share the name)`);
+  }
+  return skip('was not auto-matched (no CVR or exact-name candidate in NetSuite)');
+}
+
+async function vendorMatched(ctx, expense, vendor, how) {
+  const id = String(vendor.id);
+  console.log(`MATCH vendor "${expense.vendor?.name || ''}" -> NetSuite ${id} (${how})`);
+  const cvId = expense.vendor?.id;
+  if (cvId != null) {
+    try {
+      await corpayPatch(ctx.fetchImpl, ctx.corpay,
+        `/v2/teams/${ctx.corpay.teamId}/vendors/${cvId}/external-id`,
+        { source: 'netsuite', externalId: id });
+      console.log(`STAMPED Corpay vendor ${cvId} with externalId=${id}`);
+      if (ctx.corpayVendorCache[cvId]) ctx.corpayVendorCache[cvId].externalId = id;
+    } catch (e) {
+      // Needs a vendor-write scope; without it we simply re-match from cache next run.
+      console.log(`NOTE could not stamp Corpay vendor ${cvId} (${e.message}) — will re-match next run`);
+    }
+  }
+  return id;
+}
+
 // -------------------- mapping --------------------
 
 // Tax code by expense currency (NS_TAX_CODE_ID_<ISO>, e.g. EU reverse charge for EUR),
@@ -354,16 +547,17 @@ function currencyIdFor(expense, ns) {
 // are used only when they reconcile: zero lines are dropped, and if a line is negative or
 // the sum differs from the header amount, the bill falls back to one header-total line
 // (logged loudly) instead of booking wrong money.
-function mapLines(expense, ns) {
+async function mapLines(ctx, expense) {
+  const ns = ctx.ns;
   const taxCode = taxCodeFor(expense, ns);
-  const headerLine = [{
-    account: { id: numericId(expense.category?.externalId) || ns.defaultExpenseAccountId },
+  const headerLine = async () => [{
+    account: { id: await resolveAccount(ctx, expense.category) },
     grossAmt: money(expense.amount),
     taxCode,
   }];
   const all = Array.isArray(expense.lines) ? expense.lines : [];
   const lines = all.filter((l) => Number(l.amount || 0) !== 0);
-  if (lines.length === 0) return headerLine;
+  if (lines.length === 0) return headerLine();
 
   const sumMinor = all.reduce((s, l) => s + Number(l.amount || 0), 0);
   const anyNegative = lines.some((l) => Number(l.amount) < 0);
@@ -372,23 +566,26 @@ function mapLines(expense, ns) {
       ? 'contain negative amounts'
       : `sum ${money(sumMinor)} != total ${money(expense.amount)}`;
     console.log(`WARN ${expense.id}: line splits ${why} — booking single header-total line`);
-    return headerLine;
+    return headerLine();
   }
-  return lines.map((l) => {
+  const items = [];
+  for (const l of lines) {
     const item = {
-      account: { id: numericId(l.category?.externalId) || ns.defaultExpenseAccountId },
+      account: { id: await resolveAccount(ctx, l.category) },
       grossAmt: money(l.amount),
       taxCode,
     };
     if (l.note) item.memo = l.note;
-    return item;
-  });
+    items.push(item);
+  }
+  return items;
 }
 
 // Vendor bill / vendor credit share the same body shape (kind = 'bill' | 'credit').
 // Currency is set explicitly when NS_CURRENCY_ID_<ISO> maps it; otherwise it is omitted
 // and NetSuite defaults it from the vendor record.
-function buildBillBody(expense, vendorId, ns, kind) {
+async function buildBillBody(ctx, expense, vendorId, kind) {
+  const ns = ctx.ns;
   const body = {
     externalId: eid(kind, expense.id),
     entity: { id: vendorId },
@@ -398,7 +595,7 @@ function buildBillBody(expense, vendorId, ns, kind) {
     tranId: String(expense.reference || expense.number || expense.id).slice(0, 45),
     tranDate: dateOnly(expense.referenceDate),
     memo: `Corpay One expense ${expense.id}`,
-    expense: { items: mapLines(expense, ns) },
+    expense: { items: await mapLines(ctx, expense) },
   };
   const curId = currencyIdFor(expense, ns);
   if (curId) body.currency = { id: curId };
@@ -433,23 +630,14 @@ function buildPaymentBody(expense, vendorId, billInternalId, ns) {
 
 // -------------------- per-record processing --------------------
 
-function resolveVendorId(expense, stats, kind) {
-  const vendorId = numericId(expense.vendor?.externalId);
-  if (!vendorId) {
-    stats.skipped++;
-    console.log(`SKIP ${kind} ${expense.id}: vendor "${expense.vendor?.name || ''}" has no numeric NetSuite externalId`);
-  }
-  return vendorId;
-}
-
 // Upsert a bill or credit; for a paid bill also create its payment (once, never updated).
-async function processExpense(fetchImpl, config, expense, kind, stats) {
-  const { ns } = config;
+async function processExpense(ctx, expense, kind) {
+  const { ns, fetchImpl, stats } = ctx;
   const record = kind === 'bill' ? 'vendorBill' : 'vendorCredit';
   const counter = kind === 'bill' ? 'bills' : 'credits';
   const label = kind === 'bill' ? 'BILL' : 'CREDIT';
 
-  const vendorId = resolveVendorId(expense, stats, kind);
+  const vendorId = await resolveVendor(ctx, expense, kind);
   if (!vendorId) return;
 
   const payable = kind === 'bill' && isPaid(expense);
@@ -467,7 +655,7 @@ async function processExpense(fetchImpl, config, expense, kind, stats) {
     }
   }
 
-  const body = buildBillBody(expense, vendorId, ns, kind);
+  const body = await buildBillBody(ctx, expense, vendorId, kind);
   // ?replace=expense: NetSuite REST MERGES sublists on update by default (incoming lines
   // without line ids are APPENDED). replace makes each upsert a full sublist replace, so
   // re-upserting an unchanged/edited bill can never duplicate lines.
@@ -475,13 +663,13 @@ async function processExpense(fetchImpl, config, expense, kind, stats) {
   stats[counter]++;
   console.log(`${label} ${eid(kind, expense.id)} upserted (ns id ${internalId || '?'})`);
 
-  if (payable) await createPayment(fetchImpl, config, expense, vendorId, internalId, stats);
+  if (payable) await createPayment(ctx, expense, vendorId, internalId);
 }
 
 // Create the vendor payment for a just-upserted bill (existence already checked by caller).
 // billInternalId comes from the bill PUT's Location header; only look it up if that was null.
-async function createPayment(fetchImpl, config, expense, vendorId, billInternalId, stats) {
-  const { ns } = config;
+async function createPayment(ctx, expense, vendorId, billInternalId) {
+  const { ns, fetchImpl, stats } = ctx;
   let billId = billInternalId;
   if (!billId) {
     billId = await nsGetInternalId(fetchImpl, ns, `/record/v1/vendorBill/eid:${eid('bill', expense.id)}?fields=id`);
@@ -509,6 +697,20 @@ export async function runSync(config, fetchImpl = globalThis.fetch) {
     c.token = await corpayGetToken(fetchImpl, c);
   }
 
+  // Per-run context: config, per-run lookup caches, counters.
+  const ctx = {
+    fetchImpl,
+    ns: config.ns,
+    corpay: c,
+    stats,
+    accountMap: null,
+    nsVendors: null,
+    corpayVendorCache: {},
+    notedCategories: new Set(),
+  };
+
+  await preflight(fetchImpl, config.ns);
+
   const cutoffMs = c.lookbackDays > 0 ? Date.now() - c.lookbackDays * 86400000 : null;
   console.log(`Listing Corpay expenses (states: ${c.syncStates.join(', ')}; lookback: ${c.lookbackDays ? c.lookbackDays + 'd' : 'unlimited'})...`);
   const billIds = dedupe(await listExpenseIds(fetchImpl, c, 'Bill', cutoffMs));
@@ -523,7 +725,7 @@ export async function runSync(config, fetchImpl = globalThis.fetch) {
         console.log(`SKIP ${kind} ${id}: no detail payload`);
         return;
       }
-      await processExpense(fetchImpl, config, expense, kind, stats);
+      await processExpense(ctx, expense, kind);
     } catch (e) {
       stats.errors++;
       console.error(`ERROR ${kind} ${id}: ${e.message}`);

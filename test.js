@@ -33,7 +33,16 @@ const EXPENSES = {
     amount: 30000, currency: 'EUR', state: 'Booked', friendlyStatus: 'Booked',
     referenceDate: '2026-06-03T00:00:00Z',
     vendor: { id: 'v3', name: '3pX Recruitment Limited', externalId: '715' },
-    category: { externalId: '236' }, lines: [],
+    // No stamped externalId — resolved via the account NUMBER (2202 -> id 236).
+    category: { externalId: 'not-numeric', number: 2202 }, lines: [],
+  },
+  // Unstamped vendor that auto-matches by CVR (identification DK 12 34 56 78 -> vendor 742).
+  'bill-am': {
+    id: 'bill-am', type: 'Bill', reference: 'INV-0003', number: 5003,
+    amount: 20000, currency: 'DKK', state: 'Booked', friendlyStatus: 'Booked',
+    referenceDate: '2026-06-05T00:00:00Z',
+    vendor: { id: 'v9', name: 'Apcoa Danmark A/S', externalId: null },
+    category: { externalId: null, number: 2201 }, lines: [],
   },
 };
 
@@ -42,13 +51,36 @@ const json = (obj, status = 200) =>
 const noContent = (location) =>
   new Response(null, { status: 204, headers: { Location: location } });
 
+// Canned SuiteQL rows shared by all stubs: preflight (subsidiary + configured accounts),
+// the chart-of-accounts map (acctnumber -> id) and the vendor list for auto-matching.
+function suiteqlRows(q) {
+  if (q.includes('FROM subsidiary')) return [{ id: '10' }];
+  if (q.includes('WHERE id IN')) return [
+    { id: '114', accttype: 'AcctPay', isinactive: 'F' },
+    { id: '340', accttype: 'Bank', isinactive: 'F' },
+    { id: '341', accttype: 'Bank', isinactive: 'F' },
+    { id: '999', accttype: 'Expense', isinactive: 'F' },
+  ];
+  if (q.includes('acctnumber')) return [
+    { id: '235', acctnumber: '2201' },
+    { id: '236', acctnumber: '2202' },
+  ];
+  if (q.includes('FROM vendor')) return [
+    { id: '742', companyname: 'APCOA DANMARK A/S', vatregnumber: 'DK12345678' },
+    { id: '715', companyname: '3pX Recruitment Limited', vatregnumber: null },
+  ];
+  return [];
+}
+const suiteqlRes = (q) => json({ items: suiteqlRows(q), hasMore: false });
+
 // Shallow list items carry a recent date so the default lookback window keeps them,
 // regardless of the wall clock the test runs under. Detail dates stay fixed (asserted).
 const RECENT = new Date().toISOString();
 
 // paymentExists=false -> vendorPayment GET returns 404 (create); true -> 200 (skip/settled).
 // reversedBillIds -> ids returned for the Cancelled/Refunded reversal listing.
-function makeStub(records, { paymentExists = false, reversedBillIds = [] } = {}) {
+// corpayPatches collects vendor externalId stamp-backs.
+function makeStub(records, { paymentExists = false, reversedBillIds = [], corpayPatches = [] } = {}) {
   return async function stubFetch(url, opts = {}) {
     const method = (opts.method || 'GET').toUpperCase();
     const u = new URL(url);
@@ -57,6 +89,18 @@ function makeStub(records, { paymentExists = false, reversedBillIds = [] } = {})
     // ---- Corpay ----
     if (u.hostname.includes('corpayone.com')) {
       if (path.endsWith('/connect/token')) return json({ access_token: 'test-token' });
+      if (method === 'PATCH' && path.includes('/external-id')) {
+        corpayPatches.push({ path, body: JSON.parse(opts.body) });
+        return json({});
+      }
+      const vm = /\/v2\/teams\/team-1\/vendors\/([^/]+)$/.exec(path);
+      if (vm) {
+        const details = {
+          v2: { id: 'v2', name: 'Vendor Without ExternalId', identification: null },
+          v9: { id: 'v9', name: 'APCOA Danmark A/S', identification: 'DK 12 34 56 78' },
+        };
+        return json({ data: details[vm[1]] || null });
+      }
       if (path.endsWith('/v2/expenses')) {
         const type = u.searchParams.get('Type');
         const state = u.searchParams.get('State');
@@ -67,7 +111,8 @@ function makeStub(records, { paymentExists = false, reversedBillIds = [] } = {})
         } else {
           bills = type === 'Creditnote'
             ? [{ id: 'credit-1', referenceDate: RECENT }]
-            : [{ id: 'bill-1', paymentDate: RECENT }, { id: 'bill-2', referenceDate: RECENT }];
+            : [{ id: 'bill-1', paymentDate: RECENT }, { id: 'bill-2', referenceDate: RECENT },
+               { id: 'bill-am', referenceDate: RECENT }];
         }
         return json({ total: bills.length, offset: 0, count: bills.length, data: { bills } });
       }
@@ -78,6 +123,7 @@ function makeStub(records, { paymentExists = false, reversedBillIds = [] } = {})
 
     // ---- NetSuite ----
     if (u.hostname.includes('suitetalk.api.netsuite.com')) {
+      if (path.endsWith('/query/v1/suiteql')) return suiteqlRes(JSON.parse(opts.body).q);
       records.push({ method, path, query: u.search, url: String(url),
         body: opts.body ? JSON.parse(opts.body) : null, auth: opts.headers?.Authorization });
       if (method === 'GET' && path.includes('/vendorPayment/eid:')) {
@@ -126,17 +172,56 @@ async function main() {
   assert.equal(cfg.ns.bankAccountByCurrency.EUR, '341');
   assert.deepEqual(cfg.corpay.syncStates, ['Booked', 'Paid']);
   assert.equal(cfg.corpay.lookbackDays, 90, 'lookback defaults to 90 days');
+  assert.equal(cfg.corpay.vendorAutomatch, true, 'vendor automatch is on by default');
+  assert.equal(loadConfig({ ...baseEnv, CORPAY_VENDOR_AUTOMATCH: 'false' }).corpay.vendorAutomatch, false);
+
+  // ---------- preflight: misconfiguration -> ONE clear message, nothing written ----------
+  {
+    const badStub = async (url, opts = {}) => {
+      const u = new URL(url);
+      if (u.hostname.includes('corpayone.com')) return json({ access_token: 'test-token' });
+      if (u.pathname.endsWith('/query/v1/suiteql')) {
+        const q = JSON.parse(opts.body).q;
+        if (q.includes('FROM subsidiary')) return json({ items: [], hasMore: false }); // wrong subsidiary
+        if (q.includes('WHERE id IN')) return json({ items: [ // 999 missing, 114 wrong type
+          { id: '114', accttype: 'Bank', isinactive: 'F' },
+          { id: '340', accttype: 'Bank', isinactive: 'F' },
+          { id: '341', accttype: 'Bank', isinactive: 'F' },
+        ], hasMore: false });
+        return json({ items: [], hasMore: false });
+      }
+      throw new Error(`preflight must not touch records, got ${u.pathname}`);
+    };
+    await assert.rejects(() => runSync(loadConfig(baseEnv), badStub),
+      (e) => /PREFLIGHT failed/.test(e.message)
+        && /NS_AP_ACCOUNT_ID=114: expected an AcctPay/.test(e.message)
+        && /NS_DEFAULT_EXPENSE_ACCOUNT_ID=999: account not found/.test(e.message)
+        && /NS_SUBSIDIARY_ID=10: subsidiary not found/.test(e.message),
+      'all configuration problems are listed in one preflight error');
+  }
 
   // ---------- main pass: payment does NOT yet exist ----------
   const records = [];
-  const stats = await runSync(loadConfig(baseEnv), makeStub(records));
+  const corpayPatches = [];
+  const stats = await runSync(loadConfig(baseEnv), makeStub(records, { corpayPatches }));
 
   assert.deepEqual(
     { bills: stats.bills, credits: stats.credits, payments: stats.payments,
       settled: stats.settled, skipped: stats.skipped, warnings: stats.warnings, errors: stats.errors },
-    { bills: 1, credits: 1, payments: 1, settled: 0, skipped: 1, warnings: 0, errors: 0 },
-    'expected 1 bill, 1 credit, 1 payment, 0 settled, 1 skip, 0 warnings, 0 errors',
+    { bills: 2, credits: 1, payments: 1, settled: 0, skipped: 1, warnings: 0, errors: 0 },
+    'expected 2 bills (one auto-matched), 1 credit, 1 payment, 1 skip',
   );
+
+  // Vendor auto-match: bill-am's vendor has no externalId, but its CVR matches vendor 742;
+  // the bill posts with entity 742 and the match is stamped back to Corpay.
+  const amPut = find(records, 'PUT', '/vendorBill/eid:corpay-bill-bill-am');
+  assert.ok(amPut, 'auto-matched vendor bill upserted');
+  assert.equal(amPut.body.entity.id, '742', 'entity resolved via CVR match');
+  assert.equal(amPut.body.expense.items[0].account.id, '235',
+    'expense account resolved via category NUMBER (2201) against the chart of accounts');
+  assert.equal(corpayPatches.length, 1, 'match stamped back to Corpay once');
+  assert.ok(corpayPatches[0].path.includes('/vendors/v9/external-id'));
+  assert.deepEqual(corpayPatches[0].body, { source: 'netsuite', externalId: '742' });
 
   // Bill upsert: correct eid: URL + payload shape.
   const billPut = find(records, 'PUT', '/vendorBill/eid:corpay-bill-bill-1');
@@ -166,8 +251,8 @@ async function main() {
   // Bill total (sum of gross lines) equals the Corpay expense amount (125000 øre = 1250.00).
   assert.equal(items[0].grossAmt + items[1].grossAmt, 1250.0, 'gross lines sum to the Corpay payable total');
 
-  // Skip: bill-2 has no numeric vendor externalId -> never written.
-  assert.ok(!find(records, 'PUT', 'corpay-bill-bill-2'), 'bill with missing vendor externalId skipped');
+  // Skip: bill-2's vendor has no externalId, no CVR and no name match -> never written.
+  assert.ok(!find(records, 'PUT', 'corpay-bill-bill-2'), 'unmatched vendor bill skipped');
 
   // Credit upsert: gross amount, and NO approvalStatus (field does not exist on vendorCredit).
   const creditPut = find(records, 'PUT', '/vendorCredit/eid:corpay-credit-credit-1');
@@ -224,7 +309,7 @@ async function main() {
     makeStub(records2, { paymentExists: true, reversedBillIds: ['bill-gone'] }));
   assert.equal(stats2.payments, 0, 'existing payment is not re-created');
   assert.equal(stats2.settled, 1, 'settled bill counted in stats.settled');
-  assert.equal(stats2.bills, 0, 'settled bill is NOT counted as upserted');
+  assert.equal(stats2.bills, 1, 'only the unpaid auto-matched bill is re-upserted, not the settled one');
   assert.ok(!find(records2, 'POST', '/vendorPayment'), 'no POST vendorPayment when one already exists');
   assert.ok(find(records2, 'GET', '/vendorPayment/eid:corpay-pay-bill-1'), 'payment-existence check happens first');
   assert.ok(!find(records2, 'PUT', '/vendorBill/eid:corpay-bill-bill-1'), 'settled bill is NOT re-PUT');
@@ -261,6 +346,7 @@ async function main() {
       throw new Error(`unexpected corpay path ${u.pathname}`);
     }
     const method = (opts.method || 'GET').toUpperCase();
+    if (u.pathname.endsWith('/query/v1/suiteql')) return suiteqlRes(JSON.parse(opts.body).q);
     records4.push({ method, path: u.pathname, query: u.search,
       body: opts.body ? JSON.parse(opts.body) : null });
     if (method === 'GET' && u.pathname.includes('/vendorPayment/eid:')) return json({}, 404);
@@ -298,11 +384,12 @@ async function main() {
       const m = /\/v3\/expenses\/(.+)$/.exec(path);
       if (m) {
         lb.details.push(m[1]);
-        // vendor without externalId -> processed then skipped; no NetSuite write needed.
+        // vendor without externalId/id -> auto-match finds no candidate -> skipped.
         return json({ data: { id: m[1], amount: 1000, vendor: { externalId: null } } });
       }
       throw new Error(`unexpected corpay path ${path}`);
     }
+    if (path.endsWith('/query/v1/suiteql')) return suiteqlRes(JSON.parse(opts.body).q);
     lb.ns.push(`${(opts.method || 'GET')} ${path}`);
     return noContent('/services/rest/record/v1/vendorBill/1');
   };
