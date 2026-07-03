@@ -1,0 +1,56 @@
+name: Corpay One → NetSuite sync
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"   # hvert 15. minut (UTC)
+  workflow_dispatch: {}       # manuel kørsel via Actions-fanen
+
+jobs:
+  sync:
+    # Slås til ved at oprette repository-variablen SYNC_ENABLED = true
+    # (Settings -> Secrets and variables -> Actions -> Variables).
+    # Indtil da springes kørslerne over, så manglende nøgler ikke støjer.
+    if: ${{ vars.SYNC_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Run sync
+        run: node sync.js
+        env:
+          CORPAY_BASE_URL: ${{ vars.CORPAY_BASE_URL }}
+          CORPAY_IDENTITY_URL: ${{ vars.CORPAY_IDENTITY_URL }}
+          CORPAY_TEAM_ID: ${{ secrets.CORPAY_TEAM_ID }}
+          CORPAY_TOKEN: ${{ secrets.CORPAY_TOKEN }}
+          CORPAY_CLIENT_ID: ${{ secrets.CORPAY_CLIENT_ID }}
+          CORPAY_CLIENT_SECRET: ${{ secrets.CORPAY_CLIENT_SECRET }}
+          CORPAY_REFRESH_TOKEN: ${{ secrets.CORPAY_REFRESH_TOKEN }}
+          CORPAY_LOOKBACK_DAYS: ${{ vars.CORPAY_LOOKBACK_DAYS }}
+          NS_ACCOUNT_ID: ${{ secrets.NS_ACCOUNT_ID }}
+          NS_CONSUMER_KEY: ${{ secrets.NS_CONSUMER_KEY }}
+          NS_CONSUMER_SECRET: ${{ secrets.NS_CONSUMER_SECRET }}
+          NS_TOKEN_ID: ${{ secrets.NS_TOKEN_ID }}
+          NS_TOKEN_SECRET: ${{ secrets.NS_TOKEN_SECRET }}
+          NS_SUBSIDIARY_ID: ${{ vars.NS_SUBSIDIARY_ID }}
+          NS_AP_ACCOUNT_ID: ${{ vars.NS_AP_ACCOUNT_ID }}
+          NS_BANK_ACCOUNT_ID: ${{ vars.NS_BANK_ACCOUNT_ID }}
+          NS_BANK_ACCOUNT_ID_EUR: ${{ vars.NS_BANK_ACCOUNT_ID_EUR }}
+          NS_DEFAULT_EXPENSE_ACCOUNT_ID: ${{ vars.NS_DEFAULT_EXPENSE_ACCOUNT_ID }}
+          NS_DEFAULT_TAX_CODE_ID: ${{ vars.NS_DEFAULT_TAX_CODE_ID }}
+
+  test:
+    # Kører altid ved manuel start — hurtig sundhedstest uden nøgler.
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm test
