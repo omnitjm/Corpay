@@ -28,10 +28,35 @@ const runtimeMock = (p, userId = 42) => ({
   getCurrentScript: () => ({ getParameter: ({ name }) => p[name] }),
   getCurrentUser: () => ({ id: userId })
 });
-const httpsMock = (handler, calls) => ({
+const httpsMock = (handler, calls, patches) => ({
   createSecureString: ({ input }) => ({ __secure: true, input }),
-  get: ({ url, headers }) => { if (calls) calls.push({ url, headers }); return handler(url, headers); }
+  get: ({ url, headers }) => { if (calls) calls.push({ url, headers }); return handler(url, headers); },
+  request: ({ method, url, body, headers }) => {
+    if (patches) patches.push({ method, url, body, headers });
+    return { code: 204, body: '' };
+  }
 });
+// N/query mock: runSuiteQL returns canned rows chosen by a distinctive substring of the SQL
+// ('accttype' = preflight accounts, 'subsidiary', 'acctnumber' = account-number map,
+// 'companyname' = vendor list). Records every executed statement in `calls`.
+const queryMock = (rowsByKey, calls) => ({
+  runSuiteQL: ({ query }) => {
+    if (calls) calls.push(query);
+    let rows = [];
+    for (const key in rowsByKey) { if (query.includes(key)) { rows = rowsByKey[key]; break; } }
+    return { asMappedResults: () => rows };
+  }
+});
+// Valid, active configuration matching P — preflight passes, account/vendor maps empty by default.
+const OK_ACCOUNTS = [
+  { id: 114, accttype: 'AcctPay', isinactive: 'F' },
+  { id: 340, accttype: 'Bank', isinactive: 'F' },
+  { id: 341, accttype: 'Bank', isinactive: 'F' },
+  { id: 999, accttype: 'Expense', isinactive: 'F' }
+];
+const DEFAULT_QUERY_ROWS = {
+  accttype: OK_ACCOUNTS, subsidiary: [{ id: 10 }], acctnumber: [], companyname: []
+};
 const searchMock = (existing, seen) => ({
   Type: { TRANSACTION: 'transaction' },
   create: ({ filters }) => {
@@ -103,7 +128,23 @@ const DETAILS = {
     vendor: { name: 'Some Vendor', externalId: '746' }, category: { externalId: '235' }, lines: [] },
   'credit-1': { id: 'credit-1', reference: 'CN-0001', amount: 30000, currency: 'EUR',
     state: 'Booked', referenceDate: '2026-06-03T00:00:00Z',
-    vendor: { name: '3pX', externalId: '715' }, category: { externalId: '236' }, lines: [] }
+    vendor: { name: '3pX', externalId: '715' }, category: { externalId: '236' }, lines: [] },
+  // Account-by-number: non-numeric category externalIds, resolved via category.number.
+  'bill-catnum': { id: 'bill-catnum', reference: 'INV-CN', amount: 15000, currency: 'DKK',
+    state: 'Booked', referenceDate: '2026-06-06T00:00:00Z',
+    vendor: { name: 'Cat Vendor', externalId: '742' }, category: { externalId: 'nope' },
+    lines: [{ amount: 10000, note: 'known', category: { externalId: 'x', number: 2201 } },
+      { amount: 5000, note: 'unknown', category: { externalId: 'x', number: 9999, name: 'Mystery' } }] },
+  // Vendor auto-match candidates (non-numeric/absent externalId + a vendor.id to fetch detail).
+  'bill-cvr': { id: 'bill-cvr', reference: 'INV-CVR', amount: 20000, currency: 'DKK',
+    state: 'Booked', referenceDate: '2026-06-07T00:00:00Z',
+    vendor: { id: 'cv-1', name: 'APCOA', externalId: null }, category: { externalId: '235' }, lines: [] },
+  'bill-name': { id: 'bill-name', reference: 'INV-NAME', amount: 8000, currency: 'DKK',
+    state: 'Booked', referenceDate: '2026-06-08T00:00:00Z',
+    vendor: { id: 'cv-2', name: 'Altibox', externalId: null }, category: { externalId: '235' }, lines: [] },
+  'bill-ambig': { id: 'bill-ambig', reference: 'INV-AMBIG', amount: 7000, currency: 'DKK',
+    state: 'Booked', referenceDate: '2026-06-09T00:00:00Z',
+    vendor: { id: 'cv-3', name: 'Duplicate Co', externalId: null }, category: { externalId: '235' }, lines: [] }
 };
 const jsonRes = (obj, code = 200) => ({ code, body: JSON.stringify(obj) });
 const detailHandler = (url) => {
@@ -111,6 +152,28 @@ const detailHandler = (url) => {
   if (m) return jsonRes({ data: DETAILS[m[1]] });
   throw new Error('unexpected corpay url ' + url);
 };
+// Corpay v2 vendor details (name + identification), keyed by vendorId.
+const VENDOR_DETAILS = {
+  'cv-1': { name: 'Apcoa Parking Denmark', identification: 'DK 12 34 56 78' }, // CVR-only match
+  'cv-2': { name: 'Altibox Danmark A/S', identification: null },              // name-only match
+  'cv-3': { name: 'Duplicate Co', identification: null }                      // ambiguous name
+};
+// NetSuite active vendors for auto-match SuiteQL.
+const NS_VENDORS = [
+  { id: '742', companyname: 'APCOA DANMARK A/S', vatregnumber: 'DK 12345678' },
+  { id: '746', companyname: 'Altibox Danmark A/S', vatregnumber: 'DK99999999' },
+  { id: '801', companyname: 'Duplicate Co', vatregnumber: '' },
+  { id: '802', companyname: 'Duplicate Co', vatregnumber: null }
+];
+// Serves both v3 expense details and v2 vendor details (GET). PATCH goes through https.request.
+const automatchHandler = (url) => {
+  const mv = /\/v2\/teams\/[^/]+\/vendors\/([^/?]+)$/.exec(url);
+  if (mv) return jsonRes({ data: VENDOR_DETAILS[mv[1]] });
+  return detailHandler(url);
+};
+// Returns empty expense pages, so getInputData completes after preflight without any documents.
+const listHandler = (url) => (/\/v2\/expenses\?/.test(url)
+  ? jsonRes({ total: 0, data: { bills: [] } }) : detailHandler(url));
 
 const P = {
   custscript_cp_base_url: 'https://api.corpayone.com/external',
@@ -123,19 +186,29 @@ const P = {
 };
 
 // Build a module + shared state for a map scenario.
-function harness({ existing = {}, params = P } = {}) {
+function harness({ existing = {}, params = P, handler = detailHandler,
+  queryRows = DEFAULT_QUERY_ROWS, log = logMock } = {}) {
   const state = { created: [], loaded: [], transformed: [] };
   const searches = [];
+  const queries = [];
+  const patches = [];
   const mr = loadModule({
-    'N/https': httpsMock(detailHandler), 'N/record': recordMock(state),
-    'N/search': searchMock(existing, searches), 'N/runtime': runtimeMock(params),
-    'N/log': logMock, 'N/email': emailMock([])
+    'N/https': httpsMock(handler, null, patches), 'N/record': recordMock(state),
+    'N/search': searchMock(existing, searches), 'N/query': queryMock(queryRows, queries),
+    'N/runtime': runtimeMock(params), 'N/log': log, 'N/email': emailMock([])
   });
   const outputs = [];
-  return { state, searches, outVals: () => outputs.map((o) => o.value),
+  return { state, searches, queries, patches, outVals: () => outputs.map((o) => o.value),
+    getInputData: () => mr.getInputData(),
     run: (id, kind, extra) => mr.map({
       value: JSON.stringify({ id, kind, ...extra }), write: (kv) => outputs.push(kv) }) };
 }
+// Log mock that records [type, detail] pairs so tests can assert MATCH / SKIP / PREFLIGHT lines.
+const logCapture = () => {
+  const rec = [];
+  return { rec, debug() {}, audit(t, d) { rec.push(['audit', t, d]); },
+    error(t, d) { rec.push(['error', t, d]); } };
+};
 
 function main() {
   // ============================================ getInputData: paging + lookback + dedupe
@@ -160,7 +233,7 @@ function main() {
     };
     const mr = loadModule({
       'N/https': httpsMock(handler), 'N/record': recordMock({ created: [], loaded: [], transformed: [] }),
-      'N/search': searchMock({}),
+      'N/search': searchMock({}), 'N/query': queryMock(DEFAULT_QUERY_ROWS),
       'N/runtime': runtimeMock({ ...P, custscript_cp_states: 'Booked', custscript_cp_lookback_days: '30' }),
       'N/log': logMock, 'N/email': emailMock([])
     });
@@ -304,14 +377,14 @@ function main() {
   {
     const sc = [];
     loadModule({ 'N/https': httpsMock(detailHandler, sc), 'N/record': recordMock({ created: [], loaded: [], transformed: [] }),
-      'N/search': searchMock({}), 'N/runtime': runtimeMock(P), 'N/log': logMock, 'N/email': emailMock([]) })
+      'N/search': searchMock({}), 'N/query': queryMock(DEFAULT_QUERY_ROWS), 'N/runtime': runtimeMock(P), 'N/log': logMock, 'N/email': emailMock([]) })
       .map({ value: JSON.stringify({ id: 'credit-1', kind: 'credit' }), write() {} });
     assert.equal(sc[0].headers.Authorization.__secure, true, 'API secret -> SecureString header');
     assert.equal(sc[0].headers.Authorization.input, 'Bearer {custsecret_corpay}', 'secret by placeholder, never inlined');
 
     const pc = [];
     loadModule({ 'N/https': httpsMock(detailHandler, pc), 'N/record': recordMock({ created: [], loaded: [], transformed: [] }),
-      'N/search': searchMock({}),
+      'N/search': searchMock({}), 'N/query': queryMock(DEFAULT_QUERY_ROWS),
       'N/runtime': runtimeMock({ ...P, custscript_cp_token_secret: '', custscript_cp_token_plain: 'raw-jwt' }),
       'N/log': logMock, 'N/email': emailMock([]) })
       .map({ value: JSON.stringify({ id: 'credit-1', kind: 'credit' }), write() {} });
@@ -324,7 +397,7 @@ function main() {
     const iter = (pairs) => ({ iterator: () => ({ each: (cb) => pairs.forEach(([k, v]) => cb(k, v)) }) });
     const sent = [];
     loadModule({ 'N/https': httpsMock(detailHandler), 'N/record': recordMock({ created: [], loaded: [], transformed: [] }),
-      'N/search': searchMock({}), 'N/runtime': runtimeMock(P), 'N/log': logMock, 'N/email': emailMock(sent) })
+      'N/search': searchMock({}), 'N/query': queryMock(DEFAULT_QUERY_ROWS), 'N/runtime': runtimeMock(P), 'N/log': logMock, 'N/email': emailMock(sent) })
       .summarize({
         output: iter([['bills:1', 'bills'], ['payments:1', 'payments'], ['skipped:4', 'skipped'], ['errors:5', 'errors']]),
         mapSummary: { errors: iter([['errors:6', 'boom uncaught']]) }
@@ -336,10 +409,115 @@ function main() {
 
     const sent2 = [];
     loadModule({ 'N/https': httpsMock(detailHandler), 'N/record': recordMock({ created: [], loaded: [], transformed: [] }),
-      'N/search': searchMock({}), 'N/runtime': runtimeMock(P), 'N/log': logMock, 'N/email': emailMock(sent2) })
+      'N/search': searchMock({}), 'N/query': queryMock(DEFAULT_QUERY_ROWS), 'N/runtime': runtimeMock(P), 'N/log': logMock, 'N/email': emailMock(sent2) })
       .summarize({ output: iter([['bills:1', 'bills']]), mapSummary: { errors: iter([]) } });
     assert.equal(sent2.length, 0, 'no email when there are no errors');
     console.log('ok  summarize: tally + conditional error email');
+  }
+
+  // ============================================ preflight: happy path (getInputData runs)
+  {
+    const h = harness({ handler: listHandler });
+    const input = h.getInputData();
+    assert.ok(Array.isArray(input), 'valid config -> preflight passes, getInputData proceeds');
+    console.log('ok  preflight: happy path (getInputData runs)');
+  }
+
+  // ============================================ preflight: failure lists ALL problems + logs
+  {
+    const badRows = {
+      accttype: [
+        { id: 114, accttype: 'Bank', isinactive: 'F' },   // AP param points at a Bank account
+        { id: 340, accttype: 'Bank', isinactive: 'F' },
+        { id: 341, accttype: 'Bank', isinactive: 'F' },
+        { id: 999, accttype: 'Expense', isinactive: 'F' }
+      ],
+      subsidiary: []                                        // subsidiary 10 not found
+    };
+    const log = logCapture();
+    const h = harness({ handler: listHandler, queryRows: badRows, log });
+    let msg = '';
+    assert.throws(() => h.getInputData(), (e) => { msg = e.message; return true; });
+    assert.ok(/custscript_cp_ap_account=114: not an Accounts Payable account \(accttype=Bank\)/.test(msg),
+      'AP misconfig listed with id + reason');
+    assert.ok(/custscript_cp_subsidiary=10: subsidiary not found/.test(msg),
+      'both problems collected into one error (subsidiary also listed)');
+    assert.ok(log.rec.some((r) => r[0] === 'error' && r[1] === 'PREFLIGHT'),
+      'preflight throw logged as log.error(PREFLIGHT, ...) then rethrown');
+    console.log('ok  preflight: failure lists every problem + logs PREFLIGHT');
+  }
+
+  // ============================================ account resolution by category number
+  {
+    const rows = { ...DEFAULT_QUERY_ROWS, acctnumber: [{ id: '235', acctnumber: '2201' }] };
+    const h = harness({ queryRows: rows });
+    h.run('bill-catnum', 'bill');
+    const bill = h.state.created[0];
+    assert.equal(bill.sublists.expense.length, 2);
+    assert.equal(bill.sublists.expense[0].account, '235', 'category.number 2201 -> account 235 by acctnumber');
+    assert.equal(bill.sublists.expense[1].account, '999', 'unknown number 9999 -> default expense account');
+    assert.ok(h.queries.some((q) => q.includes('acctnumber')), 'account-number map fetched via SuiteQL');
+    console.log('ok  account resolution by category number (+ default fallback)');
+  }
+
+  // ============================================ vendor auto-match (i) CVR match + stamp-back
+  {
+    const rows = { ...DEFAULT_QUERY_ROWS, companyname: NS_VENDORS };
+    const log = logCapture();
+    const h = harness({ handler: automatchHandler, queryRows: rows, log });
+    h.run('bill-cvr', 'bill');
+    assert.equal(h.state.created[0].fields.entity, '742', 'CVR/VAT digits match resolves vendor 742');
+    assert.equal(h.patches.length, 1, 'external-id stamp-back PATCH recorded');
+    assert.equal(h.patches[0].method, 'PATCH');
+    assert.ok(/\/vendors\/cv-1\/external-id$/.test(h.patches[0].url), 'stamp-back targets the Corpay vendor');
+    const body = JSON.parse(h.patches[0].body);
+    assert.equal(body.source, 'netsuite', 'stamp body source=netsuite');
+    assert.equal(body.externalId, '742', 'stamp body carries the matched internal id');
+    assert.ok(log.rec.some((r) => r[1] === 'MATCH' && /\(cvr\)/.test(r[2])), 'logged MATCH via cvr');
+    assert.deepEqual(h.outVals(), ['bills']);
+    console.log('ok  vendor auto-match (i) CVR match + stamp-back');
+  }
+
+  // ============================================ vendor auto-match (ii) exact-name (no CVR)
+  {
+    const rows = { ...DEFAULT_QUERY_ROWS, companyname: NS_VENDORS };
+    const log = logCapture();
+    const h = harness({ handler: automatchHandler, queryRows: rows, log });
+    h.run('bill-name', 'bill');
+    assert.equal(h.state.created[0].fields.entity, '746', 'exact-name match (no CVR) resolves vendor 746');
+    assert.equal(h.patches.length, 1, 'stamp-back recorded for a name match too');
+    assert.ok(log.rec.some((r) => r[1] === 'MATCH' && /\(name\)/.test(r[2])), 'logged MATCH via name');
+    console.log('ok  vendor auto-match (ii) exact-name match when no CVR');
+  }
+
+  // ============================================ vendor auto-match (iii) ambiguous name -> skip
+  {
+    const rows = { ...DEFAULT_QUERY_ROWS, companyname: NS_VENDORS };
+    const log = logCapture();
+    const h = harness({ handler: automatchHandler, queryRows: rows, log });
+    h.run('bill-ambig', 'bill');
+    assert.equal(h.state.created.length, 0, 'ambiguous match writes nothing');
+    assert.equal(h.patches.length, 0, 'no stamp-back on skip');
+    assert.deepEqual(h.outVals(), ['skipped']);
+    assert.ok(log.rec.some((r) => r[1] === 'SKIP' && /2 name candidates/.test(r[2])),
+      'SKIP message states the ambiguity (2 name candidates)');
+    console.log('ok  vendor auto-match (iii) two same-name vendors -> ambiguous skip');
+  }
+
+  // ============================================ vendor auto-match (iv) disabled -> old skip
+  {
+    const rows = { ...DEFAULT_QUERY_ROWS, companyname: NS_VENDORS };
+    const log = logCapture();
+    const h = harness({ params: { ...P, custscript_cp_vendor_automatch: 'false' },
+      handler: automatchHandler, queryRows: rows, log });
+    h.run('bill-cvr', 'bill');
+    assert.equal(h.state.created.length, 0, 'automatch disabled -> skipped');
+    assert.deepEqual(h.outVals(), ['skipped']);
+    assert.ok(!h.queries.some((q) => q.includes('companyname')),
+      'automatch disabled -> no vendor SuiteQL fetch');
+    assert.ok(log.rec.some((r) => r[1] === 'SKIP' && /has no numeric NetSuite externalId/.test(r[2])),
+      'falls back to the original skip message');
+    console.log('ok  vendor auto-match (iv) disabled -> old skip, no vendor SuiteQL');
   }
 
   console.log('\nAll tests passed.');

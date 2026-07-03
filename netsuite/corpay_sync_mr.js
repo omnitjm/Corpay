@@ -20,8 +20,8 @@
  * @NApiVersion 2.1
  * @NScriptType MapReduceScript
  */
-define(['N/https', 'N/record', 'N/search', 'N/runtime', 'N/log', 'N/email'],
-  function (https, record, search, runtime, log, email) {
+define(['N/https', 'N/record', 'N/search', 'N/query', 'N/runtime', 'N/log', 'N/email'],
+  function (https, record, search, query, runtime, log, email) {
     'use strict';
 
     // ---------------------------------------------------------------- constants / helpers
@@ -37,6 +37,19 @@ define(['N/https', 'N/record', 'N/search', 'N/runtime', 'N/log', 'N/email'],
       if (val === null || val === undefined) { return null; }
       var s = String(val).trim();
       return /^\d+$/.test(s) ? s : null;
+    }
+
+    // All digits in val (e.g. a CVR/VAT number stripped of "DK", spaces, dots). '' if none.
+    function digitsOnly(val) {
+      if (val === null || val === undefined) { return ''; }
+      return String(val).replace(/\D/g, '');
+    }
+
+    // Company-name normalizer for fuzzy vendor matching: lowercase, collapse internal
+    // whitespace to single spaces, trim. '' for null/undefined.
+    function normalizeName(val) {
+      if (val === null || val === undefined) { return ''; }
+      return String(val).replace(/\s+/g, ' ').trim().toLowerCase();
     }
 
     // "YYYY-MM-DD..." -> a Date at local midnight (avoids timezone day-shift). null if unusable.
@@ -62,6 +75,22 @@ define(['N/https', 'N/record', 'N/search', 'N/runtime', 'N/log', 'N/email'],
       if (!d) { return true; }
       var t = Date.parse(d);
       return isNaN(t) || t >= cutoffMs;
+    }
+
+    // ---------------------------------------------------------------- run-scoped caches
+    // Module-level, lazily built, and reset at the start of getInputData. Map/Reduce stages run
+    // in separate contexts, so the map phase simply rebuilds these on first use (a fresh module
+    // per stage) — the reset keeps a single-context test run (or a re-used context) honest.
+    var _accountNumberCache = null;   // acctnumber (trimmed string) -> account internal id (string)
+    var _vendorListCache = null;      // [{ id, companyname, vatregnumber }] active NetSuite vendors
+    var _corpayVendorCache = {};      // Corpay vendorId -> vendor detail (or null) — one GET per run
+    var _unmatchedCategorySeen = {};  // dedupe key -> true, so the NOTE logs once per category
+
+    function resetCaches() {
+      _accountNumberCache = null;
+      _vendorListCache = null;
+      _corpayVendorCache = {};
+      _unmatchedCategorySeen = {};
     }
 
     // ---------------------------------------------------------------- script parameters
@@ -96,7 +125,11 @@ define(['N/https', 'N/record', 'N/search', 'N/runtime', 'N/log', 'N/email'],
         defaultExpenseAcct: g('custscript_cp_default_expense_acct'),
         defaultTaxcode: g('custscript_cp_default_taxcode'),
         taxcodeEur: g('custscript_cp_taxcode_eur'),
-        notifyEmail: g('custscript_cp_notify_email')
+        notifyEmail: g('custscript_cp_notify_email'),
+        // Vendor auto-match is ON unless explicitly set to 'false'. When enabled, a bill/credit
+        // whose vendor has no numeric NetSuite externalId is matched by CVR/VAT then exact name
+        // (see resolveVendor); when disabled, such a document is skipped as before.
+        vendorAutomatch: String(g('custscript_cp_vendor_automatch')).toLowerCase() !== 'false'
       };
     }
 
@@ -183,6 +216,212 @@ define(['N/https', 'N/record', 'N/search', 'N/runtime', 'N/log', 'N/email'],
       return found;
     }
 
+    // Run a SuiteQL statement and return an array of {column: value} objects (column names lower-cased).
+    function runSuiteQL(sql) {
+      return query.runSuiteQL({ query: sql }).asMappedResults();
+    }
+
+    // ---------------------------------------------------------------- preflight validation
+
+    // Validate the account/subsidiary parameters up front so a misconfiguration produces ONE
+    // clear, actionable error at the top of the run — not a wall of identical per-document
+    // failures. Collects every problem and throws them together. Called from getInputData.
+    function preflight(p) {
+      var problems = [];
+
+      // Each configured account, with the accttype it must have ('' = any type, just exists+active).
+      var checks = [
+        { name: 'custscript_cp_ap_account', id: p.apAccount, type: 'AcctPay', label: 'an Accounts Payable account' },
+        { name: 'custscript_cp_bank_account', id: p.bankAccount, type: 'Bank', label: 'a Bank account' },
+        { name: 'custscript_cp_default_expense_acct', id: p.defaultExpenseAcct, type: '', label: '' }
+      ];
+      if (numericId(p.bankAccountEur)) {
+        checks.push({ name: 'custscript_cp_bank_account_eur', id: p.bankAccountEur, type: 'Bank', label: 'a Bank account' });
+      }
+
+      var ids = [];
+      checks.forEach(function (c) {
+        var nid = numericId(c.id);
+        if (nid) { ids.push(nid); }
+        else { problems.push(c.name + '=' + c.id + ': not a numeric account internal id'); }
+      });
+
+      var acctById = {};
+      if (ids.length) {
+        runSuiteQL('SELECT id, accttype, isinactive FROM account WHERE id IN (' + ids.join(', ') + ')')
+          .forEach(function (r) { acctById[String(r.id)] = r; });
+      }
+      checks.forEach(function (c) {
+        var nid = numericId(c.id);
+        if (!nid) { return; } // already reported above
+        var row = acctById[nid];
+        if (!row) { problems.push(c.name + '=' + c.id + ': account not found'); return; }
+        if (String(row.isinactive).toUpperCase() === 'T') {
+          problems.push(c.name + '=' + c.id + ': account is inactive');
+        }
+        if (c.type && String(row.accttype) !== c.type) {
+          problems.push(c.name + '=' + c.id + ': not ' + c.label + ' (accttype=' + row.accttype + ')');
+        }
+      });
+
+      var subId = numericId(p.subsidiary);
+      if (!subId) {
+        problems.push('custscript_cp_subsidiary=' + p.subsidiary + ': not a numeric subsidiary internal id');
+      } else if (!runSuiteQL('SELECT id FROM subsidiary WHERE id = ' + subId).length) {
+        problems.push('custscript_cp_subsidiary=' + p.subsidiary + ': subsidiary not found');
+      }
+
+      if (problems.length) {
+        throw new Error('Preflight validation failed:\n  ' + problems.join('\n  '));
+      }
+    }
+
+    // ---------------------------------------------------------------- account resolution
+
+    // acctnumber -> internal id map for all active accounts, built once per run (lazy).
+    function accountNumberMap() {
+      if (_accountNumberCache === null) {
+        _accountNumberCache = {};
+        runSuiteQL("SELECT id, acctnumber FROM account WHERE isinactive = 'F'").forEach(function (r) {
+          if (r.acctnumber !== null && r.acctnumber !== undefined && String(r.acctnumber).trim() !== '') {
+            _accountNumberCache[String(r.acctnumber).trim()] = String(r.id);
+          }
+        });
+      }
+      return _accountNumberCache;
+    }
+
+    // Log the "no account matched" NOTE at most once per distinct category per run.
+    function noteUnmatchedCategory(category) {
+      var name = (category && category.name) || '';
+      var number = (category && category.number !== null && category.number !== undefined)
+        ? category.number : '';
+      var key = name + '|' + number;
+      if (_unmatchedCategorySeen[key]) { return; }
+      _unmatchedCategorySeen[key] = true;
+      log.audit('NOTE', 'category "' + name + '" (' + number + ') not matched to a NetSuite '
+        + 'account — using default');
+    }
+
+    // Resolve a Corpay category to a NetSuite account internal id:
+    //   (a) numeric category.externalId -> use directly as the internal id;
+    //   (b) category.number matches a NetSuite account acctnumber -> that account;
+    //   (c) fallback to the default expense account (logged once per category).
+    function resolveAccount(category, p) {
+      var extId = numericId(category && category.externalId);
+      if (extId) { return extId; }
+      if (category && category.number !== null && category.number !== undefined) {
+        var hit = accountNumberMap()[String(category.number).trim()];
+        if (hit) { return hit; }
+      }
+      noteUnmatchedCategory(category);
+      return p.defaultExpenseAcct;
+    }
+
+    // ---------------------------------------------------------------- vendor resolution
+
+    // Active NetSuite vendors, fetched once per run (lazy).
+    function vendorList() {
+      if (_vendorListCache === null) {
+        _vendorListCache = runSuiteQL(
+          "SELECT id, companyname, vatregnumber FROM vendor WHERE isinactive = 'F'");
+      }
+      return _vendorListCache;
+    }
+
+    // Corpay vendor detail (name + identification), cached per vendorId per run. Best-effort:
+    // a failed GET returns null (matching continues on whatever the shallow expense carries).
+    function corpayVendorDetail(p, vendorId) {
+      if (!vendorId) { return null; }
+      var key = String(vendorId);
+      if (_corpayVendorCache.hasOwnProperty(key)) { return _corpayVendorCache[key]; }
+      var detail = null;
+      try {
+        var resp = corpayGet(p, '/v2/teams/' + encodeURIComponent(p.teamId)
+          + '/vendors/' + encodeURIComponent(vendorId), null);
+        detail = (resp && resp.data) || null;
+      } catch (e) {
+        log.audit('NOTE', 'could not fetch Corpay vendor ' + vendorId + ': ' + ((e && e.message) || e));
+      }
+      _corpayVendorCache[key] = detail;
+      return detail;
+    }
+
+    // Best-effort stamp-back of the matched NetSuite internal id onto the Corpay vendor, so the
+    // next run resolves it instantly via externalId and never re-matches. A failure (missing
+    // teams.vendors write scope, transient error) is logged and never blocks the sync.
+    function stampVendorExternalId(p, vendorId, nsId) {
+      if (!vendorId) { return; }
+      try {
+        var res = https.request({
+          method: 'PATCH',
+          url: p.baseUrl + '/v2/teams/' + encodeURIComponent(p.teamId)
+            + '/vendors/' + encodeURIComponent(vendorId) + '/external-id',
+          body: JSON.stringify({ source: 'netsuite', externalId: String(nsId) }),
+          headers: { Authorization: authHeader(p), 'Content-Type': 'application/json' }
+        });
+        if (res && (res.code < 200 || res.code >= 300)) {
+          log.audit('NOTE', 'vendor ' + vendorId + ' external-id stamp-back -> ' + res.code
+            + ' (matched anyway; will re-match next run)');
+        }
+      } catch (e) {
+        log.audit('NOTE', 'vendor ' + vendorId + ' external-id stamp-back failed: '
+          + ((e && e.message) || e) + ' (matched anyway; will re-match next run)');
+      }
+    }
+
+    // Resolve the NetSuite vendor internal id for an expense. Returns { id } on success, or
+    // { skip: <reason> } when the caller should SKIP the document.
+    //   1. numeric expense.vendor.externalId -> use directly (already mapped).
+    //   2. auto-match (unless disabled): CVR/VAT digits, then exact normalized company name;
+    //      each requires EXACTLY ONE candidate. On match, stamp the id back to Corpay.
+    //   3. otherwise SKIP with an actionable message.
+    function resolveVendor(p, expense) {
+      var vendor = expense.vendor || {};
+      var extId = numericId(vendor.externalId);
+      if (extId) { return { id: extId }; }
+
+      if (!p.vendorAutomatch) {
+        return { skip: 'vendor "' + (vendor.name || '') + '" has no numeric NetSuite externalId' };
+      }
+
+      var vendors = vendorList();
+      var detail = corpayVendorDetail(p, vendor.id);
+      var corpayName = (detail && detail.name) || vendor.name || '';
+      var tail = ' — set the NetSuite internal id as the vendor\'s externalId in Corpay One';
+
+      // Match 1: CVR/VAT (digits only, both sides non-empty, exactly one candidate).
+      var cvr = digitsOnly(detail && detail.identification);
+      if (cvr) {
+        var cvrMatches = vendors.filter(function (v) {
+          var vc = digitsOnly(v.vatregnumber);
+          return vc && vc === cvr;
+        });
+        if (cvrMatches.length === 1) {
+          log.audit('MATCH', 'vendor "' + corpayName + '" -> NetSuite ' + cvrMatches[0].id + ' (cvr)');
+          stampVendorExternalId(p, vendor.id, cvrMatches[0].id);
+          return { id: String(cvrMatches[0].id) };
+        }
+      }
+
+      // Match 2: exact normalized company name (exactly one candidate).
+      var norm = normalizeName(corpayName);
+      if (norm) {
+        var nameMatches = vendors.filter(function (v) { return normalizeName(v.companyname) === norm; });
+        if (nameMatches.length === 1) {
+          log.audit('MATCH', 'vendor "' + corpayName + '" -> NetSuite ' + nameMatches[0].id + ' (name)');
+          stampVendorExternalId(p, vendor.id, nameMatches[0].id);
+          return { id: String(nameMatches[0].id) };
+        }
+        if (nameMatches.length > 1) {
+          return { skip: 'vendor "' + corpayName + '" not auto-matched ('
+            + nameMatches.length + ' name candidates)' + tail };
+        }
+      }
+
+      return { skip: 'vendor "' + corpayName + '" not auto-matched (no CVR/name candidates)' + tail };
+    }
+
     // ---------------------------------------------------------------- record building
 
     // Corpay lines are GROSS (VAT-inclusive) splits of the payable total. Each line is posted as
@@ -214,8 +453,7 @@ define(['N/https', 'N/record', 'N/search', 'N/runtime', 'N/log', 'N/email'],
     // instead (logged loudly) rather than wrong money.
     function addExpenseLines(rec, expense, p) {
       var taxcode = taxcodeFor(expense, p);
-      var headerAccount = numericId(expense.category && expense.category.externalId)
-        || p.defaultExpenseAcct;
+      var headerAccount = resolveAccount(expense.category, p);
       var all = Array.isArray(expense.lines) ? expense.lines : [];
       var lines = all.filter(function (l) { return Number(l.amount || 0) !== 0; });
 
@@ -224,7 +462,7 @@ define(['N/https', 'N/record', 'N/search', 'N/runtime', 'N/log', 'N/email'],
         var anyNegative = lines.some(function (l) { return Number(l.amount) < 0; });
         if (!anyNegative && sumMinor === Number(expense.amount)) {
           lines.forEach(function (l) {
-            var account = numericId(l.category && l.category.externalId) || p.defaultExpenseAcct;
+            var account = resolveAccount(l.category, p);
             addExpenseLine(rec, account, money(l.amount), taxcode, l.note);
           });
           return;
@@ -330,6 +568,17 @@ define(['N/https', 'N/record', 'N/search', 'N/runtime', 'N/log', 'N/email'],
 
     function getInputData() {
       var p = params();
+      resetCaches();
+
+      // Validate the account/subsidiary configuration before any listing. A misconfiguration
+      // fails the run once, loudly, with an actionable message — not per-document noise.
+      try {
+        preflight(p);
+      } catch (e) {
+        log.error('PREFLIGHT', (e && e.message) || e);
+        throw e;
+      }
+
       var cutoffMs = p.lookbackDays > 0 ? Date.now() - p.lookbackDays * 86400000 : null;
       var billIds = listExpenseIds(p, 'Bill', cutoffMs);
       var creditIds = listExpenseIds(p, 'Creditnote', cutoffMs);
@@ -379,13 +628,13 @@ define(['N/https', 'N/record', 'N/search', 'N/runtime', 'N/log', 'N/email'],
           record_outcome(context, 'skipped', id);
           return;
         }
-        var vendorId = numericId(expense.vendor && expense.vendor.externalId);
-        if (!vendorId) {
-          log.audit('SKIP', kind + ' ' + id + ': vendor "'
-            + ((expense.vendor && expense.vendor.name) || '') + '" has no numeric NetSuite externalId');
+        var vres = resolveVendor(p, expense);
+        if (vres.skip) {
+          log.audit('SKIP', kind + ' ' + id + ': ' + vres.skip);
           record_outcome(context, 'skipped', id);
           return;
         }
+        var vendorId = vres.id;
 
         var payable = kind === 'bill' && isPaid(expense);
 

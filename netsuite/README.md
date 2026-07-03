@@ -77,6 +77,7 @@ account (Omnit ApS) are pre-filled — verify before go-live.
 | `custscript_cp_default_expense_acct` | Free-Form Text | **yes** | fallback GL account when a line/header category has no numeric external id |
 | `custscript_cp_default_taxcode` | Free-Form Text | **yes** | `18` (S-DK standard 25% moms) |
 | `custscript_cp_taxcode_eur` | Free-Form Text | no | `149` (ESSP-DK EU reverse charge) — tax code used for EUR expenses instead of the default; without it, EUR bills book Danish 25% input VAT |
+| `custscript_cp_vendor_automatch` | Free-Form Text | no | vendor auto-match toggle. Empty/anything except `false` = **enabled** (default); `false` = disabled (only vendors with a numeric `externalId` sync, as before). See *How mapping is resolved* |
 | `custscript_cp_notify_email` | Free-Form Text | no | ops email; a single summary email is sent only when a run has errors |
 
 > The token: set **either** `custscript_cp_token_secret` (preferred) **or**
@@ -105,13 +106,70 @@ The *Execute As* role needs:
   needed beyond access to the restricted secret.
 - Access to outbound HTTPS to `api.corpayone.com` is allowed by default for server scripts.
 
-### 8. Vendor mapping prerequisite (required)
-The script does **not** create or match vendors. For every Corpay vendor you sync, the **NetSuite
-vendor internal id must be stamped as the Corpay vendor's `externalId`**. Any bill/credit whose
-vendor has a missing or non-numeric `externalId` is **skipped** (logged as `SKIP`, counted, run
-continues). Stamp it in the Corpay UI or via
-`PATCH /external/v2/teams/{teamId}/vendors/{vendorId}/external-id` with
-`{ "source": "netsuite", "externalId": "742" }`.
+### 8. Vendor mapping (automatic — no manual stamping needed)
+Out of the box the script **auto-matches** each Corpay vendor to a NetSuite vendor (see *How
+mapping is resolved*) and, on a match, **stamps the NetSuite internal id back** onto the Corpay
+vendor's `externalId` (`PATCH /external/v2/teams/{teamId}/vendors/{vendorId}/external-id` with
+`{ "source": "netsuite", "externalId": "742" }`), so subsequent runs resolve it instantly. You do
+**not** have to pre-stamp vendors by hand.
+
+- The stamp-back is **best-effort**: it requires the Corpay **`teams.vendors` write** scope
+  (`teams.vendors.all` / `teams.vendors.create`). Without it the PATCH fails, is logged as a
+  `NOTE`, and the run continues — the vendor is still matched, it just re-matches from cache on the
+  next run instead of resolving instantly.
+- Set `custscript_cp_vendor_automatch = false` to turn matching off; then only vendors whose
+  Corpay `externalId` already holds a numeric NetSuite id sync, and everything else is skipped
+  (the pre-auto-match behaviour). Even with matching on, a vendor that cannot be matched
+  unambiguously is skipped with an actionable `SKIP` line telling you to set its `externalId`.
+
+## How mapping is resolved
+
+Every run resolves three things per document, each as a short fallback chain:
+
+- **Vendor** (`externalId` → CVR → exact name → skip):
+  1. numeric Corpay `vendor.externalId` → used directly as the NetSuite vendor internal id;
+  2. else (auto-match on) **CVR/VAT**: digits-only of the Corpay vendor's `identification` vs
+     digits-only of each NetSuite vendor's `vatregnumber` — matched only when **exactly one**
+     NetSuite vendor matches;
+  3. else **exact name**: normalized (lowercase, collapsed whitespace, trimmed) Corpay vendor name
+     vs NetSuite `companyname` — matched only when **exactly one** matches;
+  4. else **skip** the document (no candidate, or ambiguous → several candidates), logged with the
+     count so you know whether to disambiguate or just stamp the `externalId`.
+  On a match the id is stamped back to Corpay (best-effort, see above).
+- **Expense account** (`externalId` → account number → default):
+  1. numeric category `externalId` → used directly as the NetSuite account internal id;
+  2. else category **`number`** matched against the NetSuite account **`acctnumber`** (e.g. Corpay
+     category number `2201` → account "2201 Lønninger") → that account;
+  3. else the **default expense account** (`custscript_cp_default_expense_acct`), logged once per
+     category as a `NOTE`.
+- **Subsidiary**: **1 Corpay team = 1 NetSuite subsidiary = 1 deployment.** Each deployment posts
+  everything to its single `custscript_cp_subsidiary`. A **multi-subsidiary** customer deploys the
+  script **once per subsidiary/team pair** (each deployment with its own `custscript_cp_team_id` +
+  `custscript_cp_subsidiary` + account parameters).
+
+The NetSuite account and vendor lookups are done with `N/query` SuiteQL, fetched once per run and
+cached; the Corpay vendor detail (`GET /external/v2/teams/{teamId}/vendors/{vendorId}`) is fetched
+lazily and cached per vendor per run.
+
+## Preflight validation
+
+At the very start of every run (before any Corpay listing), the script validates its
+account/subsidiary parameters with one SuiteQL query each and **fails the whole run once, loudly**,
+if anything is wrong — rather than emitting the same misconfiguration error on every document. It
+checks that: the subsidiary exists; `custscript_cp_ap_account` is an **Accounts Payable** account
+(`accttype = AcctPay`); `custscript_cp_bank_account` (and `custscript_cp_bank_account_eur`, if set)
+are **Bank** accounts; the default expense account exists; and none of them is inactive. **All**
+problems are collected into a single error, e.g.:
+
+```
+Preflight validation failed:
+  custscript_cp_ap_account=114: not an Accounts Payable account (accttype=Bank)
+  custscript_cp_subsidiary=10: subsidiary not found
+```
+
+The failure is logged as `log.error('PREFLIGHT', …)` and the Map/Reduce job aborts, so a
+misconfigured deployment is obvious in the Execution Log instead of silently producing wrong or
+zero output.
 
 ## Reading the logs
 Script record → **Deployments** → open the deployment → **Execution Log**:
