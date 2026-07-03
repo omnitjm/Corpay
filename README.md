@@ -148,10 +148,20 @@ when `CORPAY_CLIENT_ID`/`SECRET`/`REFRESH_TOKEN` are configured. A static
 `CORPAY_TOKEN` alone cannot self-heal an expiry — prefer configuring the
 refresh credentials for unattended runs.
 
-### Scheduling (cron)
+### Automatic vs manual runs
 
-There is no daemon and no webhooks — scheduling is external. Example crontab
-line running every 15 minutes:
+There is no daemon and no webhooks — every run is a one-shot `node sync.js`,
+so **manual mode is the default**: run it whenever you want.
+
+For automatic runs, pick one:
+
+- **GitHub Actions** (`.github/workflows/sync.yml`): the repository variable
+  `SYNC_ENABLED` is the switch. `SYNC_ENABLED=true` → runs automatically every
+  15 minutes *and* on demand; unset/anything else → **manual only** via the
+  Actions tab → *Corpay One → NetSuite sync* → **Run workflow**. Toggle the
+  variable at any time — no code change needed.
+- **cron**: add the line below for automatic runs; remove it to go back to
+  manual-only.
 
 ```cron
 */15 * * * * cd /path/to/corpay-netsuite-sync && /usr/bin/node sync.js >> sync.log 2>&1

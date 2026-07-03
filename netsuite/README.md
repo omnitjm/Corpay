@@ -84,9 +84,12 @@ account (Omnit ApS) are pre-filled — verify before go-live.
 
 ### 6. Create the Deployment
 On the Script record → Deployments → **New**:
-- **Status**: `Scheduled`.
-- **Schedule**: every **15 minutes** (Repeat → Every 15 minutes; or a Daily event repeating every
-  15 min, depending on your UI).
+- **Status** — this is the automatic/manual switch, changeable at any time:
+  - `Scheduled` → runs automatically on the schedule below;
+  - `Not Scheduled` → **manual only**: open the deployment and use **Save & Execute**
+    (or the *Execute Now* action) whenever you want a run. Nothing runs by itself.
+- **Schedule** (only relevant when Status = `Scheduled`): every **15 minutes**
+  (Repeat → Every 15 minutes; or a Daily event repeating every 15 min, depending on your UI).
 - **Concurrency**: **1** (single queue). This variant is designed to run one instance at a time —
   do not raise concurrency.
 - **Log Level**: `Audit` (so the per-document `BILL` / `CREDIT` / `PAY` / `SETTLED` / `SKIP` lines

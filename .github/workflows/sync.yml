@@ -13,10 +13,11 @@ concurrency:
 
 jobs:
   sync:
-    # Slås til ved at oprette repository-variablen SYNC_ENABLED = true
-    # (Settings -> Secrets and variables -> Actions -> Variables).
-    # Indtil da springes kørslerne over, så manglende nøgler ikke støjer.
-    if: ${{ vars.SYNC_ENABLED == 'true' }}
+    # Kørselstilstand styres af repository-variablen SYNC_ENABLED
+    # (Settings -> Secrets and variables -> Actions -> Variables):
+    #   SYNC_ENABLED = true   -> automatisk hvert 15. minut OG manuel kørsel
+    #   ellers                -> KUN manuel kørsel (Actions-fanen -> Run workflow)
+    if: ${{ github.event_name == 'workflow_dispatch' || vars.SYNC_ENABLED == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
