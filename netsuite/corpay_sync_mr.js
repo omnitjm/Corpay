@@ -1,0 +1,464 @@
+/**
+ * corpay_sync_mr.js — Corpay One -> NetSuite one-way sync, NetSuite-RESIDENT variant.
+ *
+ * A SuiteScript 2.1 Map/Reduce script that lives entirely inside NetSuite (no external
+ * server). It mirrors the business logic and externalId conventions of the external
+ * Node variant (sync.js), so the two are interchangeable and never create duplicates:
+ *   Vendor Bill    externalId  corpay-bill-{id}
+ *   Vendor Credit  externalId  corpay-credit-{id}
+ *   Vendor Payment externalId  corpay-pay-{id}
+ *
+ * Flow (one-way, poll-based; idempotency lives in the NetSuite external ids):
+ *   getInputData  page Corpay v2 /expenses (Bill + Creditnote) across states, lookback-filter,
+ *                 dedupe, and emit one {id, kind} per document.
+ *   map           per document: fetch v3 detail, upsert the bill/credit, and — for a paid bill
+ *                 whose payment does not yet exist — transform it into a vendor payment.
+ *   summarize     tally outcomes to the Audit log; optionally email a summary when errors > 0.
+ *
+ * Deploy with concurrency = 1 (see netsuite/README.md).
+ *
+ * @NApiVersion 2.1
+ * @NScriptType MapReduceScript
+ */
+define(['N/https', 'N/record', 'N/search', 'N/runtime', 'N/log', 'N/email'],
+  function (https, record, search, runtime, log, email) {
+    'use strict';
+
+    // ---------------------------------------------------------------- constants / helpers
+
+    // Canonical NetSuite external id for a Corpay expense. kind = 'bill' | 'credit' | 'pay'.
+    function eid(kind, id) { return 'corpay-' + kind + '-' + id; }
+
+    // Corpay amounts are int64 minor units (øre/cents) -> major units, 2 decimals.
+    function money(minor) { return Math.round(Number(minor || 0)) / 100; }
+
+    // Digits-only string if val is a positive integer id, else null.
+    function numericId(val) {
+      if (val === null || val === undefined) { return null; }
+      var s = String(val).trim();
+      return /^\d+$/.test(s) ? s : null;
+    }
+
+    // "YYYY-MM-DD..." -> a Date at local midnight (avoids timezone day-shift). null if unusable.
+    function toDate(val) {
+      if (!val) { return null; }
+      var m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(val));
+      return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : null;
+    }
+
+    // Payment-eligible once Corpay reports settlement AND a date. Check/VCC flows are not yet
+    // Paid; a later run creates their payment when Corpay transitions them to Paid (self-healing).
+    function isPaid(expense) {
+      var paid = expense.state === 'Paid'
+        || expense.friendlyStatus === 'Paid'
+        || expense.friendlyStatus === 'MarkedAsPaid';
+      return paid && !!expense.paymentDate;
+    }
+
+    // Lookback filter for a SHALLOW list item. cutoffMs=null means unlimited; undated items kept.
+    function withinLookback(item, cutoffMs) {
+      if (cutoffMs === null) { return true; }
+      var d = item.paymentDate || item.referenceDate;
+      if (!d) { return true; }
+      var t = Date.parse(d);
+      return isNaN(t) || t >= cutoffMs;
+    }
+
+    // ---------------------------------------------------------------- script parameters
+
+    function params() {
+      var script = runtime.getCurrentScript();
+      function g(name) {
+        var v = script.getParameter({ name: name });
+        return (v === null || v === undefined) ? '' : v;
+      }
+      // Lookback: unset -> 90 (default); explicit 0 -> unlimited; anything else numeric wins.
+      var lookbackDays = 90;
+      var lb = g('custscript_cp_lookback_days');
+      if (lb !== '') {
+        var n = Number(lb);
+        if (isFinite(n) && n >= 0) { lookbackDays = n; }
+      }
+      var states = (g('custscript_cp_states') || 'Booked,Initialized,Paid')
+        .split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+      return {
+        baseUrl: (g('custscript_cp_base_url') || 'https://api.corpayone.com/external')
+          .replace(/\/$/, ''),
+        tokenSecret: g('custscript_cp_token_secret'),
+        tokenPlain: g('custscript_cp_token_plain'),
+        teamId: g('custscript_cp_team_id'),
+        states: states,
+        lookbackDays: lookbackDays,
+        subsidiary: g('custscript_cp_subsidiary'),
+        apAccount: g('custscript_cp_ap_account'),
+        bankAccount: g('custscript_cp_bank_account'),
+        bankAccountEur: g('custscript_cp_bank_account_eur'),
+        defaultExpenseAcct: g('custscript_cp_default_expense_acct'),
+        defaultTaxcode: g('custscript_cp_default_taxcode'),
+        taxcodeEur: g('custscript_cp_taxcode_eur'),
+        notifyEmail: g('custscript_cp_notify_email')
+      };
+    }
+
+    // ---------------------------------------------------------------- Corpay client (N/https)
+
+    // Authorization header. The API Secret (preferred) is injected server-side via a
+    // SecureString so the token never appears in the execution log. A plain-text token
+    // parameter is the fallback for accounts without the API Secrets feature.
+    function authHeader(p) {
+      if (p.tokenSecret) {
+        return https.createSecureString({ input: 'Bearer {' + p.tokenSecret + '}' });
+      }
+      return 'Bearer ' + p.tokenPlain;
+    }
+
+    function buildQuery(query) {
+      if (!query) { return ''; }
+      var parts = [];
+      for (var k in query) {
+        if (query.hasOwnProperty(k) && query[k] !== null && query[k] !== undefined) {
+          parts.push(encodeURIComponent(k) + '=' + encodeURIComponent(query[k]));
+        }
+      }
+      return parts.length ? '?' + parts.join('&') : '';
+    }
+
+    function corpayGet(p, path, query) {
+      var url = p.baseUrl + path + buildQuery(query);
+      var res = https.get({
+        url: url,
+        headers: { Authorization: authHeader(p), Accept: 'application/json' }
+      });
+      if (res.code < 200 || res.code >= 300) {
+        throw new Error('Corpay GET ' + path + ' -> ' + res.code + ': ' + res.body);
+      }
+      return JSON.parse(res.body);
+    }
+
+    // List expense ids of a given Type across the given states (paginated), keeping only
+    // shallow items inside the lookback window. Deduped across states.
+    function listExpenseIds(p, type, cutoffMs, states) {
+      var seen = {};
+      var ids = [];
+      (states || p.states).forEach(function (state) {
+        var offset = 0;
+        for (;;) {
+          var resp = corpayGet(p, '/v2/expenses', {
+            TeamId: p.teamId, Type: type, State: state, Offset: offset, Count: 100
+          });
+          var bills = (resp && resp.data && resp.data.bills) || [];
+          for (var i = 0; i < bills.length; i++) {
+            var b = bills[i];
+            if (withinLookback(b, cutoffMs) && !seen[b.id]) {
+              seen[b.id] = true;
+              ids.push(b.id);
+            }
+          }
+          offset += bills.length;
+          // Always stop on an empty page; only trust offset>=total when total is positive.
+          var total = resp && resp.total;
+          var hasTotal = total !== null && total !== undefined && Number(total) > 0;
+          if (bills.length === 0 || (hasTotal && offset >= Number(total))) { break; }
+        }
+      });
+      return ids;
+    }
+
+    function getExpense(p, id) {
+      var resp = corpayGet(p, '/v3/expenses/' + encodeURIComponent(id), null);
+      return resp && resp.data;
+    }
+
+    // ---------------------------------------------------------------- NetSuite lookups
+
+    // Internal id of the transaction carrying this external id, or null. External ids are
+    // globally unique (corpay-bill / -credit / -pay), so one transaction search disambiguates.
+    function findByExternalId(externalId) {
+      var found = null;
+      search.create({
+        type: search.Type.TRANSACTION,
+        filters: [['externalidstring', 'is', externalId]],
+        columns: ['internalid']
+      }).run().each(function (row) { found = row.id; return false; });
+      return found;
+    }
+
+    // ---------------------------------------------------------------- record building
+
+    // Corpay lines are GROSS (VAT-inclusive) splits of the payable total. Each line is posted as
+    // `grossamt` with the default tax code, so NetSuite back-computes the net and the bill total
+    // equals the Corpay amount. (Net `amount` + a tax code would add VAT on top and leave every
+    // bill ~25% open after the matching payment.)
+    function addExpenseLine(rec, account, gross, taxcode, note) {
+      rec.selectNewLine({ sublistId: 'expense' });
+      rec.setCurrentSublistValue({ sublistId: 'expense', fieldId: 'account', value: account });
+      rec.setCurrentSublistValue({ sublistId: 'expense', fieldId: 'grossamt', value: gross });
+      if (taxcode) {
+        rec.setCurrentSublistValue({ sublistId: 'expense', fieldId: 'taxcode', value: taxcode });
+      }
+      if (note) {
+        rec.setCurrentSublistValue({ sublistId: 'expense', fieldId: 'memo', value: note });
+      }
+      rec.commitLine({ sublistId: 'expense' });
+    }
+
+    // Tax code by expense currency (EUR override for e.g. EU reverse charge), else default.
+    function taxcodeFor(expense, p) {
+      var cur = expense.currency ? String(expense.currency).toUpperCase() : '';
+      return (cur === 'EUR' && p.taxcodeEur) ? p.taxcodeEur : p.defaultTaxcode;
+    }
+
+    // The bill total MUST equal expense.amount — the payment applies exactly that — so line
+    // splits are used only when they reconcile: zero lines are dropped, and if a line is
+    // negative or the sum differs from the header amount, ONE header-total line is booked
+    // instead (logged loudly) rather than wrong money.
+    function addExpenseLines(rec, expense, p) {
+      var taxcode = taxcodeFor(expense, p);
+      var headerAccount = numericId(expense.category && expense.category.externalId)
+        || p.defaultExpenseAcct;
+      var all = Array.isArray(expense.lines) ? expense.lines : [];
+      var lines = all.filter(function (l) { return Number(l.amount || 0) !== 0; });
+
+      if (lines.length > 0) {
+        var sumMinor = all.reduce(function (s, l) { return s + Number(l.amount || 0); }, 0);
+        var anyNegative = lines.some(function (l) { return Number(l.amount) < 0; });
+        if (!anyNegative && sumMinor === Number(expense.amount)) {
+          lines.forEach(function (l) {
+            var account = numericId(l.category && l.category.externalId) || p.defaultExpenseAcct;
+            addExpenseLine(rec, account, money(l.amount), taxcode, l.note);
+          });
+          return;
+        }
+        log.audit('WARN', expense.id + ': line splits '
+          + (anyNegative ? 'contain negative amounts'
+            : 'sum ' + money(sumMinor) + ' != total ' + money(expense.amount))
+          + ' — booking single header-total line');
+      }
+      // No usable lines: a single line from the header category for the full (gross) amount.
+      addExpenseLine(rec, headerAccount, money(expense.amount), taxcode, null);
+    }
+
+    function removeAllExpenseLines(rec) {
+      var count = rec.getLineCount({ sublistId: 'expense' });
+      for (var i = count - 1; i >= 0; i--) {
+        rec.removeLine({ sublistId: 'expense', line: i });
+      }
+    }
+
+    // Upsert a vendor bill (kind='bill') or vendor credit (kind='credit'). Returns the internal id.
+    // On UPDATE all existing expense lines are removed first, then re-added — this prevents line
+    // duplication/merge across runs. Currency is intentionally left to default from the vendor.
+    function upsertBillOrCredit(p, expense, kind, vendorId) {
+      var type = kind === 'bill' ? record.Type.VENDOR_BILL : record.Type.VENDOR_CREDIT;
+      var externalId = eid(kind, expense.id);
+      var existingId = findByExternalId(externalId);
+
+      var rec;
+      if (existingId) {
+        rec = record.load({ type: type, id: existingId, isDynamic: true });
+        removeAllExpenseLines(rec);
+      } else {
+        rec = record.create({ type: type, isDynamic: true });
+      }
+
+      rec.setValue({ fieldId: 'externalid', value: externalId });
+      rec.setValue({ fieldId: 'entity', value: vendorId });
+      rec.setValue({ fieldId: 'subsidiary', value: p.subsidiary });
+      var tranDate = toDate(expense.referenceDate);
+      if (tranDate) { rec.setValue({ fieldId: 'trandate', value: tranDate }); }
+      var dueDate = toDate(expense.dueDate);
+      if (dueDate) { rec.setValue({ fieldId: 'duedate', value: dueDate }); }
+      rec.setValue({
+        fieldId: 'tranid',
+        // Falls back to the Corpay expense id so tranid is never blank (some accounts
+        // reject an empty Reference No.).
+        value: String(expense.reference || expense.number || expense.id).slice(0, 45)
+      });
+      rec.setValue({ fieldId: 'memo', value: 'Corpay One expense ' + expense.id });
+      // approvalstatus (2 = Approved) exists only on vendorBill — Corpay is the approval system
+      // of record. vendorCredit has no such field.
+      if (kind === 'bill') { rec.setValue({ fieldId: 'approvalstatus', value: 2 }); }
+
+      addExpenseLines(rec, expense, p);
+
+      // ignoreMandatoryFields keeps form-level mandatory custom fields (Staria / e-invoicing
+      // localization) from blocking the save — matching how the REST variant posts. See README.
+      return rec.save({ enableSourcing: true, ignoreMandatoryFields: true });
+    }
+
+    // Create the vendor payment for a just-upserted bill via transform (pre-populates the apply
+    // sublist from the source bill). The caller has already confirmed no payment exists yet.
+    function createPayment(p, expense, billId) {
+      var pay = record.transform({
+        fromType: record.Type.VENDOR_BILL,
+        fromId: billId,
+        toType: record.Type.VENDOR_PAYMENT,
+        isDynamic: true
+      });
+
+      var cur = expense.currency ? String(expense.currency).toUpperCase() : '';
+      var bank = (cur === 'EUR' && p.bankAccountEur) ? p.bankAccountEur : p.bankAccount;
+      pay.setValue({ fieldId: 'account', value: bank });
+      var payDate = toDate(expense.paymentDate);
+      if (payDate) { pay.setValue({ fieldId: 'trandate', value: payDate }); }
+      pay.setValue({ fieldId: 'externalid', value: eid('pay', expense.id) });
+      pay.setValue({ fieldId: 'memo', value: 'Corpay One payment ' + expense.id });
+
+      // Verify/force the apply line for THIS bill: checked, full amount. `doc` on the apply
+      // sublist holds the internal id of the applied transaction (matches the REST apply.doc.id).
+      var amount = money(expense.amount);
+      var count = pay.getLineCount({ sublistId: 'apply' });
+      for (var i = 0; i < count; i++) {
+        var docId = pay.getSublistValue({ sublistId: 'apply', fieldId: 'doc', line: i });
+        if (String(docId) === String(billId)) {
+          pay.selectLine({ sublistId: 'apply', line: i });
+          pay.setCurrentSublistValue({ sublistId: 'apply', fieldId: 'apply', value: true });
+          pay.setCurrentSublistValue({ sublistId: 'apply', fieldId: 'amount', value: amount });
+          pay.commitLine({ sublistId: 'apply' });
+        }
+      }
+      return pay.save({ enableSourcing: true, ignoreMandatoryFields: true });
+    }
+
+    // Emit a single-key outcome so summarize can tally it. Keys are unique (outcome + id) so no
+    // two writes ever collide; the value is the canonical stat name.
+    function record_outcome(context, outcome, id) {
+      context.write({ key: outcome + ':' + id, value: outcome });
+    }
+
+    // ---------------------------------------------------------------- Map/Reduce stages
+
+    function getInputData() {
+      var p = params();
+      var cutoffMs = p.lookbackDays > 0 ? Date.now() - p.lookbackDays * 86400000 : null;
+      var billIds = listExpenseIds(p, 'Bill', cutoffMs);
+      var creditIds = listExpenseIds(p, 'Creditnote', cutoffMs);
+      var out = [];
+      billIds.forEach(function (id) { out.push({ id: id, kind: 'bill' }); });
+      creditIds.forEach(function (id) { out.push({ id: id, kind: 'credit' }); });
+
+      // Reversal check: cancelled/refunded expenses that were already synced would otherwise
+      // sit in NetSuite as approved payables forever. They are surfaced as warnings in map —
+      // posted financials are never deleted automatically.
+      var reversalStates = ['Cancelled', 'Refunded'];
+      listExpenseIds(p, 'Bill', cutoffMs, reversalStates).forEach(function (id) {
+        out.push({ id: id, kind: 'bill', reversal: true });
+      });
+      listExpenseIds(p, 'Creditnote', cutoffMs, reversalStates).forEach(function (id) {
+        out.push({ id: id, kind: 'credit', reversal: true });
+      });
+
+      log.audit('getInputData', 'states=' + p.states.join(',')
+        + ' lookback=' + (p.lookbackDays ? p.lookbackDays + 'd' : 'unlimited')
+        + ' bills=' + billIds.length + ' credits=' + creditIds.length
+        + ' reversal-candidates=' + (out.length - billIds.length - creditIds.length));
+      return out;
+    }
+
+    function map(context) {
+      var item = JSON.parse(context.value);
+      var id = item.id;
+      var kind = item.kind;
+      var p = params();
+      try {
+        // Reversal candidate: cancelled/refunded in Corpay. If it still exists in NetSuite,
+        // surface it loudly for manual reversal — never auto-delete posted financials.
+        if (item.reversal) {
+          var existing = findByExternalId(eid(kind, id));
+          if (existing) {
+            log.audit('WARN', kind + ' ' + id + ': cancelled/refunded in Corpay but NetSuite '
+              + 'record ' + existing + ' still exists — reverse manually');
+            record_outcome(context, 'warnings', id);
+          }
+          return;
+        }
+
+        var expense = getExpense(p, id);
+        if (!expense) {
+          log.audit('SKIP', kind + ' ' + id + ': no detail payload');
+          record_outcome(context, 'skipped', id);
+          return;
+        }
+        var vendorId = numericId(expense.vendor && expense.vendor.externalId);
+        if (!vendorId) {
+          log.audit('SKIP', kind + ' ' + id + ': vendor "'
+            + ((expense.vendor && expense.vendor.name) || '') + '" has no numeric NetSuite externalId');
+          record_outcome(context, 'skipped', id);
+          return;
+        }
+
+        var payable = kind === 'bill' && isPaid(expense);
+
+        // For a paid bill the FIRST NetSuite lookup is the payment-existence check. If the payment
+        // exists the bill is SETTLED, so we skip the bill upsert entirely (never mutate a paid
+        // bill; a later Corpay edit could otherwise make the update fail forever).
+        if (payable && findByExternalId(eid('pay', id))) {
+          log.audit('SETTLED', eid('bill', id) + ' — payment exists, skipping');
+          record_outcome(context, 'settled', id);
+          return;
+        }
+
+        var billId = upsertBillOrCredit(p, expense, kind, vendorId);
+        record_outcome(context, kind === 'bill' ? 'bills' : 'credits', id);
+        log.audit(kind === 'bill' ? 'BILL' : 'CREDIT',
+          eid(kind, id) + ' upserted (ns id ' + billId + ')');
+
+        if (payable) {
+          var payId = createPayment(p, expense, billId);
+          record_outcome(context, 'payments', id);
+          log.audit('PAY', eid('pay', id) + ' created (ns id ' + payId + ')');
+        }
+      } catch (e) {
+        // Per-expense isolation: one bad document never kills the run.
+        log.error('ERROR ' + kind + ' ' + id, (e && e.message) || e);
+        record_outcome(context, 'errors', id);
+      }
+    }
+
+    function summarize(summary) {
+      var totals = { bills: 0, credits: 0, payments: 0, settled: 0, skipped: 0, warnings: 0, errors: 0 };
+      summary.output.iterator().each(function (key, value) {
+        if (totals.hasOwnProperty(value)) { totals[value] += 1; }
+        return true;
+      });
+
+      // Uncaught map/reduce errors are reported here too, in addition to the caught ones above.
+      var errorLines = [];
+      summary.mapSummary.errors.iterator().each(function (key, err) {
+        totals.errors += 1;
+        errorLines.push(key + ': ' + err);
+        log.error('MAP ERROR ' + key, err);
+        return true;
+      });
+
+      var line = 'bills=' + totals.bills + ' credits=' + totals.credits
+        + ' payments=' + totals.payments + ' settled=' + totals.settled
+        + ' skipped=' + totals.skipped + ' warnings=' + totals.warnings
+        + ' errors=' + totals.errors;
+      log.audit('SUMMARY', line);
+
+      if (totals.errors > 0) {
+        var p = params();
+        if (p.notifyEmail) {
+          try {
+            email.send({
+              author: runtime.getCurrentUser().id,
+              recipients: p.notifyEmail,
+              subject: 'Corpay One -> NetSuite sync: ' + totals.errors + ' error(s)',
+              body: 'Corpay One -> NetSuite Map/Reduce sync finished with errors.\n\n'
+                + line + '\n\n' + (errorLines.join('\n') || '(see the script Execution Log)')
+            });
+          } catch (e) {
+            // Never let a notification failure fail the whole job.
+            log.error('summary email failed', (e && e.message) || e);
+          }
+        }
+      }
+    }
+
+    return {
+      getInputData: getInputData,
+      map: map,
+      summarize: summarize
+    };
+  });
