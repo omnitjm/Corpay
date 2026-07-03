@@ -5,6 +5,12 @@ on:
     - cron: "*/15 * * * *"   # hvert 15. minut (UTC)
   workflow_dispatch: {}       # manuel kørsel via Actions-fanen
 
+# Én kørsel ad gangen: en langsom kørsel må aldrig overlappe den næste
+# (to samtidige skrivere mod de samme NetSuite-records).
+concurrency:
+  group: corpay-sync
+  cancel-in-progress: false
+
 jobs:
   sync:
     # Slås til ved at oprette repository-variablen SYNC_ENABLED = true

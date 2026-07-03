@@ -20,13 +20,21 @@ On each pass it reads Corpay One expenses and upserts into NetSuite:
 ### Amounts are gross (VAT-inclusive)
 
 Corpay amounts are the **payable invoice total** including VAT; lines are gross
-splits of it. Each line is posted as **`grossAmt`** with the default tax code, so
-NetSuite back-computes the net and the **bill total equals the Corpay amount**.
-(Posting the net `amount` + a tax code would make NetSuite add VAT on top,
-overshooting the payable and leaving every bill ~25 % open after its payment.)
-Minor units (øre/cents) are converted to major units (divided by 100). The DK
-legacy tax engine makes line-level tax codes effectively mandatory, so every
-line carries `NS_DEFAULT_TAX_CODE_ID`.
+splits of it. Each line is posted as **`grossAmt`** with a tax code, so NetSuite
+back-computes the net and the **bill total equals the Corpay amount**. (Posting
+the net `amount` + a tax code would make NetSuite add VAT on top, overshooting
+the payable and leaving every bill ~25 % open after its payment.) Minor units
+(øre/cents) are converted to major units (divided by 100). The DK legacy tax
+engine makes line-level tax codes effectively mandatory; the code used is
+`NS_TAX_CODE_ID_<CUR>` for the expense's currency when set, otherwise
+`NS_DEFAULT_TAX_CODE_ID`.
+
+**The bill total must always equal the payment amount**, so line splits are only
+trusted when they reconcile: zero-amount lines are dropped, and if any line is
+negative or the splits do not sum exactly to the header amount, the bill is
+booked as **one header-total line** instead (logged as `WARN`). Bill/credit
+upserts send `?replace=expense` so a re-upsert **replaces** the expense sublist
+— NetSuite's REST default would otherwise append the lines again on every run.
 
 ### Settled bills are skipped
 
@@ -41,6 +49,13 @@ keep being upserted every run — that is the update mechanism.
 Check / virtual-card settlements (`friendlyStatus` `CheckIssued` / `VccIssued`)
 are not yet `Paid`, so no payment is created for them; the next run that sees
 Corpay transition the expense to `Paid` creates it. This self-heals via polling.
+
+### Cancelled/refunded expenses raise warnings
+
+Each pass also lists `Cancelled`/`Refunded` expenses (within the lookback
+window). If such an expense **still exists in NetSuite**, it is surfaced as
+`WARN ... reverse manually` and counted under `warnings`. Posted financials are
+never deleted or voided automatically — reversing is a human decision.
 
 ## Setup
 
@@ -107,8 +122,10 @@ fills in anything missing.
 | `NS_AP_ACCOUNT_ID` | **yes** | – | AP control account internal id |
 | `NS_BANK_ACCOUNT_ID` | **yes** | – | Default bank account for payments |
 | `NS_DEFAULT_EXPENSE_ACCOUNT_ID` | **yes** | – | Fallback GL account for lines |
-| `NS_DEFAULT_TAX_CODE_ID` | **yes** | – | Tax code applied to every line |
-| `NS_BANK_ACCOUNT_ID_<CUR>` | no | – | Per-currency bank override, e.g. `NS_BANK_ACCOUNT_ID_EUR` |
+| `NS_DEFAULT_TAX_CODE_ID` | **yes** | – | Tax code applied to lines (unless overridden per currency) |
+| `NS_BANK_ACCOUNT_ID_<CUR>` | no | – | Per-currency bank override, e.g. `NS_BANK_ACCOUNT_ID_EUR=341` |
+| `NS_CURRENCY_ID_<CUR>` | no | – | NetSuite currency internal id per ISO code, e.g. `NS_CURRENCY_ID_DKK=1`, `NS_CURRENCY_ID_EUR=4`. Mapped currencies are set explicitly on bills **and** payments; unmapped ones fall back to the vendor default currency + default bank |
+| `NS_TAX_CODE_ID_<CUR>` | no | – | Tax code override per currency, e.g. `NS_TAX_CODE_ID_EUR=149` (EU reverse charge) |
 
 Missing required variables cause an immediate fail-fast with a listed message.
 
@@ -121,8 +138,15 @@ npm test          # offline unit tests (stubbed fetch, no network)
 
 The process exits `1` if any expense errored during the pass, otherwise `0`.
 The final line is a summary, e.g.
-`SUMMARY bills=12 credits=1 payments=4 settled=8 skipped=2 errors=0`
-(`settled` = paid bills skipped because their payment already exists).
+`SUMMARY bills=12 credits=1 payments=4 settled=8 skipped=2 warnings=0 errors=0`
+(`settled` = paid bills skipped because their payment already exists;
+`warnings` = cancelled/refunded expenses still present in NetSuite).
+
+Transient Corpay failures (network, 429, 5xx) are retried once; a `401` from an
+expired token triggers **one automatic re-acquire** via the refresh-token grant
+when `CORPAY_CLIENT_ID`/`SECRET`/`REFRESH_TOKEN` are configured. A static
+`CORPAY_TOKEN` alone cannot self-heal an expiry — prefer configuring the
+refresh credentials for unattended runs.
 
 ### Scheduling (cron)
 
@@ -150,13 +174,13 @@ line running every 15 minutes:
   incremental cursor.
 - **Credits are left unapplied** — vendor credits are posted open on the
   vendor's AP; apply them to bills manually in NetSuite.
-- **Currency is taken from the vendor default; no FX or partial payments.**
-  No currency id is sent on bills/credits, so each Corpay vendor's currency must
-  match the currency on its NetSuite vendor record. Payment/bill/credit amounts
-  are taken from `expense.amount` in the expense currency and the payment applies
-  the full amount — FX conversions and partial settlements are not modelled.
-  (Payments pick the bank account by currency via `NS_BANK_ACCOUNT_ID_<CUR>`,
-  falling back to `NS_BANK_ACCOUNT_ID`.)
+- **No FX or partial payments.** Amounts are taken from `expense.amount` in the
+  expense currency and the payment applies the full amount — FX conversions and
+  partial settlements are not modelled. Currencies mapped via
+  `NS_CURRENCY_ID_<CUR>` are set explicitly on bills and payments (and may use a
+  matching `NS_BANK_ACCOUNT_ID_<CUR>` bank); unmapped currencies fall back to
+  the vendor's default currency and the default bank account, so keep each
+  Corpay vendor's currency aligned with its NetSuite vendor record.
 - **Closed posting periods surface as errors.** A bill dated in a
   closed/locked NetSuite period fails; it is logged as `ERROR` and left for
   manual handling (the run still exits `1`).

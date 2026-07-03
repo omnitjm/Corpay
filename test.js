@@ -18,6 +18,7 @@ const EXPENSES = {
     lines: [
       { amount: 100000, note: 'Line one', category: { externalId: '235' } },
       { amount: 25000, note: 'Line two', category: { externalId: 'not-a-number' } },
+      { amount: 0, note: 'Zero informational line', category: { externalId: '235' } },
     ],
   },
   'bill-2': {
@@ -46,7 +47,8 @@ const noContent = (location) =>
 const RECENT = new Date().toISOString();
 
 // paymentExists=false -> vendorPayment GET returns 404 (create); true -> 200 (skip/settled).
-function makeStub(records, { paymentExists = false } = {}) {
+// reversedBillIds -> ids returned for the Cancelled/Refunded reversal listing.
+function makeStub(records, { paymentExists = false, reversedBillIds = [] } = {}) {
   return async function stubFetch(url, opts = {}) {
     const method = (opts.method || 'GET').toUpperCase();
     const u = new URL(url);
@@ -57,9 +59,16 @@ function makeStub(records, { paymentExists = false } = {}) {
       if (path.endsWith('/connect/token')) return json({ access_token: 'test-token' });
       if (path.endsWith('/v2/expenses')) {
         const type = u.searchParams.get('Type');
-        const bills = type === 'Creditnote'
-          ? [{ id: 'credit-1', referenceDate: RECENT }]
-          : [{ id: 'bill-1', paymentDate: RECENT }, { id: 'bill-2', referenceDate: RECENT }];
+        const state = u.searchParams.get('State');
+        let bills;
+        if (state === 'Cancelled' || state === 'Refunded') {
+          bills = type === 'Creditnote' ? []
+            : reversedBillIds.map((id) => ({ id, referenceDate: RECENT }));
+        } else {
+          bills = type === 'Creditnote'
+            ? [{ id: 'credit-1', referenceDate: RECENT }]
+            : [{ id: 'bill-1', paymentDate: RECENT }, { id: 'bill-2', referenceDate: RECENT }];
+        }
         return json({ total: bills.length, offset: 0, count: bills.length, data: { bills } });
       }
       const m = /\/v3\/expenses\/(.+)$/.exec(path);
@@ -98,7 +107,9 @@ const baseEnv = {
   NS_CONSUMER_KEY: 'ck', NS_CONSUMER_SECRET: 'cs', NS_TOKEN_ID: 'ti', NS_TOKEN_SECRET: 'ts',
   NS_SUBSIDIARY_ID: '10', NS_AP_ACCOUNT_ID: '114', NS_BANK_ACCOUNT_ID: '340',
   NS_BANK_ACCOUNT_ID_EUR: '341',
+  NS_CURRENCY_ID_DKK: '1', NS_CURRENCY_ID_EUR: '4',
   NS_DEFAULT_EXPENSE_ACCOUNT_ID: '999', NS_DEFAULT_TAX_CODE_ID: '18',
+  NS_TAX_CODE_ID_EUR: '149',
 };
 
 const find = (records, method, needle) =>
@@ -122,14 +133,15 @@ async function main() {
 
   assert.deepEqual(
     { bills: stats.bills, credits: stats.credits, payments: stats.payments,
-      settled: stats.settled, skipped: stats.skipped, errors: stats.errors },
-    { bills: 1, credits: 1, payments: 1, settled: 0, skipped: 1, errors: 0 },
-    'expected 1 bill, 1 credit, 1 payment, 0 settled, 1 skip, 0 errors',
+      settled: stats.settled, skipped: stats.skipped, warnings: stats.warnings, errors: stats.errors },
+    { bills: 1, credits: 1, payments: 1, settled: 0, skipped: 1, warnings: 0, errors: 0 },
+    'expected 1 bill, 1 credit, 1 payment, 0 settled, 1 skip, 0 warnings, 0 errors',
   );
 
   // Bill upsert: correct eid: URL + payload shape.
   const billPut = find(records, 'PUT', '/vendorBill/eid:corpay-bill-bill-1');
   assert.ok(billPut, 'vendor bill upserted via eid: URL');
+  assert.ok(billPut.query.includes('replace=expense'), 'PUT carries ?replace=expense so re-upserts replace lines, never append');
   assert.ok(billPut.auth.startsWith('OAuth realm="1234567_SB1"'), 'OAuth realm keeps uppercase underscore form');
   assert.equal(billPut.body.entity.id, '742', 'entity = NetSuite vendor internal id from externalId');
   assert.equal(billPut.body.subsidiary.id, '10');
@@ -137,13 +149,13 @@ async function main() {
   assert.equal(billPut.body.externalId, 'corpay-bill-bill-1');
   assert.equal(billPut.body.tranDate, '2026-06-01');
   assert.equal(billPut.body.dueDate, '2026-07-01');
-  assert.equal(billPut.body.currency, undefined, 'currency omitted (defaults from vendor)');
+  assert.equal(billPut.body.currency.id, '1', 'DKK mapped via NS_CURRENCY_ID_DKK -> explicit currency on the bill');
   assert.equal(billPut.body.tranId.length, 45, 'tranId truncated to 45 chars');
 
   // Lines: 2 items posted as GROSS (VAT-inclusive) so the bill total == Corpay amount.
-  // Non-numeric category falls back to the default expense account.
+  // The zero informational line is dropped; non-numeric category falls back to default account.
   const items = billPut.body.expense.items;
-  assert.equal(items.length, 2);
+  assert.equal(items.length, 2, 'zero-amount line dropped, 2 real lines kept');
   assert.equal(items[0].account.id, '235');
   assert.equal(items[0].grossAmt, 1000.0, 'line posted as grossAmt (VAT-inclusive), not net amount');
   assert.equal(items[0].amount, undefined, 'no net amount field — NetSuite back-computes net from grossAmt+tax');
@@ -160,10 +172,13 @@ async function main() {
   // Credit upsert: gross amount, and NO approvalStatus (field does not exist on vendorCredit).
   const creditPut = find(records, 'PUT', '/vendorCredit/eid:corpay-credit-credit-1');
   assert.ok(creditPut, 'vendor credit upserted via eid: URL');
+  assert.ok(creditPut.query.includes('replace=expense'), 'credit PUT also carries ?replace=expense');
   assert.equal(creditPut.body.entity.id, '715');
   assert.equal(creditPut.body.approvalStatus, undefined, 'vendorCredit has NO approvalStatus field');
+  assert.equal(creditPut.body.currency.id, '4', 'EUR mapped via NS_CURRENCY_ID_EUR');
   assert.equal(creditPut.body.expense.items[0].account.id, '236', 'header category used when no lines');
   assert.equal(creditPut.body.expense.items[0].grossAmt, 300.0);
+  assert.equal(creditPut.body.expense.items[0].taxCode.id, '149', 'EUR expense uses NS_TAX_CODE_ID_EUR override');
   assert.ok(!creditPut.body.apply, 'credit has no apply sublist (stays open)');
 
   // Payment: existence GET first, then POST with apply doc = bill internal id from PUT Location.
@@ -172,6 +187,7 @@ async function main() {
   const payPost = find(records, 'POST', '/vendorPayment');
   assert.ok(payPost, 'payment created');
   assert.equal(payPost.body.externalId, 'corpay-pay-bill-1');
+  assert.equal(payPost.body.currency.id, '1', 'payment carries the same explicit currency as the bill');
   assert.equal(payPost.body.account.id, '340', 'DKK payment uses default bank account');
   assert.equal(payPost.body.apAcct.id, '114');
   assert.equal(payPost.body.tranDate, '2026-06-15');
@@ -202,8 +218,10 @@ async function main() {
   assert.equal(pairs.oauth_signature, expectedSig, 'independently recomputed HMAC-SHA256 signature matches header');
 
   // ---------- second pass: payment ALREADY exists -> bill is SETTLED, not re-PUT ----------
+  // A cancelled expense (bill-gone) that still exists in NetSuite must raise a WARN.
   const records2 = [];
-  const stats2 = await runSync(loadConfig(baseEnv), makeStub(records2, { paymentExists: true }));
+  const stats2 = await runSync(loadConfig(baseEnv),
+    makeStub(records2, { paymentExists: true, reversedBillIds: ['bill-gone'] }));
   assert.equal(stats2.payments, 0, 'existing payment is not re-created');
   assert.equal(stats2.settled, 1, 'settled bill counted in stats.settled');
   assert.equal(stats2.bills, 0, 'settled bill is NOT counted as upserted');
@@ -212,6 +230,55 @@ async function main() {
   assert.ok(!find(records2, 'PUT', '/vendorBill/eid:corpay-bill-bill-1'), 'settled bill is NOT re-PUT');
   // The credit (unpaid) is still upserted every run.
   assert.ok(find(records2, 'PUT', '/vendorCredit/eid:corpay-credit-credit-1'), 'unpaid credit still upserted');
+  // Reversal check: cancelled-in-Corpay + present-in-NetSuite -> loud warning, no delete.
+  assert.equal(stats2.warnings, 1, 'cancelled expense still in NetSuite raises exactly one warning');
+  assert.ok(find(records2, 'GET', '/vendorBill/eid:corpay-bill-bill-gone'), 'reversal existence checked via eid GET');
+  assert.ok(!find(records2, 'DELETE', 'bill-gone') && !find(records2, 'PUT', 'bill-gone'),
+    'reversal is surfaced only — nothing deleted or overwritten');
+
+  // ---------- mismatched splits, unmapped currency, blank reference ----------
+  // Splits that do not sum to the payable fall back to ONE header-total line; an unmapped
+  // currency (USD) omits currency and uses the default bank; tranId falls back to the id.
+  const EXPENSE_X = {
+    id: 'bill-x', type: 'Bill', reference: null, number: 0,
+    amount: 10000, currency: 'USD', state: 'Paid', friendlyStatus: 'Paid',
+    referenceDate: '2026-06-20T00:00:00Z', paymentDate: '2026-06-25T00:00:00Z',
+    vendor: { id: 'v1', name: 'APCOA DANMARK A/S', externalId: '742' },
+    category: { externalId: '235' },
+    lines: [{ amount: 8000, note: 'Only part of the total', category: { externalId: '235' } }],
+  };
+  const records4 = [];
+  const stub4 = async (url, opts = {}) => {
+    const u = new URL(url);
+    if (u.hostname.includes('corpayone.com')) {
+      if (u.pathname.endsWith('/v2/expenses')) {
+        const st = u.searchParams.get('State');
+        const bills = (st === 'Paid' && u.searchParams.get('Type') === 'Bill')
+          ? [{ id: 'bill-x', paymentDate: RECENT }] : [];
+        return json({ total: bills.length, offset: 0, count: bills.length, data: { bills } });
+      }
+      if (/\/v3\/expenses\/bill-x$/.test(u.pathname)) return json({ data: EXPENSE_X });
+      throw new Error(`unexpected corpay path ${u.pathname}`);
+    }
+    const method = (opts.method || 'GET').toUpperCase();
+    records4.push({ method, path: u.pathname, query: u.search,
+      body: opts.body ? JSON.parse(opts.body) : null });
+    if (method === 'GET' && u.pathname.includes('/vendorPayment/eid:')) return json({}, 404);
+    if (method === 'PUT') return noContent('/services/rest/record/v1/vendorBill/7001');
+    if (method === 'POST') return noContent('/services/rest/record/v1/vendorPayment/7002');
+    throw new Error(`unexpected netsuite ${method} ${u.pathname}`);
+  };
+  const stats4 = await runSync(loadConfig({ ...baseEnv, CORPAY_SYNC_STATES: 'Paid' }), stub4);
+  assert.equal(stats4.errors, 0);
+  const xPut = records4.find((r) => r.method === 'PUT');
+  assert.equal(xPut.body.expense.items.length, 1, 'mismatched splits collapse to one header-total line');
+  assert.equal(xPut.body.expense.items[0].grossAmt, 100.0, 'header line carries the full payable');
+  assert.equal(xPut.body.currency, undefined, 'unmapped currency (USD) -> vendor default, no explicit currency');
+  assert.equal(xPut.body.tranId, 'bill-x', 'blank reference/number -> tranId falls back to the expense id');
+  const xPay = records4.find((r) => r.method === 'POST');
+  assert.equal(xPay.body.account.id, '340', 'unmapped currency -> DEFAULT bank account (never a currency-specific one)');
+  assert.equal(xPay.body.currency, undefined, 'payment currency also left to the vendor default');
+  assert.equal(xPay.body.apply.items[0].amount, 100.0, 'payment equals the bill total (header-line fallback)');
 
   // ---------- F9: lookback filter skips old shallow items before detail fetch ----------
   const OLD = new Date(Date.now() - 400 * 86400000).toISOString(); // ~400 days ago
@@ -223,7 +290,8 @@ async function main() {
     if (u.hostname.includes('corpayone.com')) {
       if (path.endsWith('/v2/expenses')) {
         const type = u.searchParams.get('Type');
-        const bills = type === 'Creditnote' ? []
+        const state = u.searchParams.get('State');
+        const bills = (type !== 'Bill' || state !== 'Paid') ? []
           : [{ id: 'bill-new', paymentDate: NEW }, { id: 'bill-old', referenceDate: OLD }];
         return json({ total: bills.length, offset: 0, count: bills.length, data: { bills } });
       }

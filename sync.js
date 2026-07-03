@@ -65,12 +65,22 @@ export function loadConfig(env = loadEnv()) {
     throw new Error('Missing required environment variables:\n  ' + missing.join('\n  '));
   }
 
-  // Per-currency bank account overrides: NS_BANK_ACCOUNT_ID_<CURRENCY>
-  const bankByCurrency = {};
-  for (const [k, v] of Object.entries(env)) {
-    const m = /^NS_BANK_ACCOUNT_ID_([A-Za-z]{3})$/.exec(k);
-    if (m && v) bankByCurrency[m[1].toUpperCase()] = v;
-  }
+  // Per-currency overrides, all following the same NS_<NAME>_<ISO> pattern:
+  //   NS_BANK_ACCOUNT_ID_EUR=341   bank account used for EUR payments
+  //   NS_CURRENCY_ID_DKK=1         NetSuite currency internal id for the ISO code
+  //   NS_TAX_CODE_ID_EUR=149       tax code override (e.g. EU reverse charge)
+  const byCurrency = (prefix) => {
+    const map = {};
+    const re = new RegExp(`^${prefix}_([A-Za-z]{3})$`);
+    for (const [k, v] of Object.entries(env)) {
+      const m = re.exec(k);
+      if (m && v) map[m[1].toUpperCase()] = v;
+    }
+    return map;
+  };
+  const bankByCurrency = byCurrency('NS_BANK_ACCOUNT_ID');
+  const currencyIdByCode = byCurrency('NS_CURRENCY_ID');
+  const taxCodeByCurrency = byCurrency('NS_TAX_CODE_ID');
 
   const syncStates = (env.CORPAY_SYNC_STATES || 'Booked,Initialized,Paid')
     .split(',').map((s) => s.trim()).filter(Boolean);
@@ -108,6 +118,8 @@ export function loadConfig(env = loadEnv()) {
       defaultExpenseAccountId: ns.NS_DEFAULT_EXPENSE_ACCOUNT_ID,
       defaultTaxCodeId: ns.NS_DEFAULT_TAX_CODE_ID,
       bankAccountByCurrency: bankByCurrency,
+      currencyIdByCode,
+      taxCodeByCurrency,
     },
   };
 }
@@ -167,22 +179,47 @@ async function corpayGetToken(fetchImpl, c) {
   return json.access_token;
 }
 
+// One retry on transient failures (network/429/5xx) and one token re-acquire on 401 when
+// refresh credentials exist — a mid-run token expiry must not kill the whole pass.
 async function corpayGet(fetchImpl, c, path, query) {
-  await sleep(150); // gentle pacing — stay well under Corpay rate limits
   const url = new URL(c.baseUrl + path);
   if (query) for (const [k, v] of Object.entries(query)) if (v != null) url.searchParams.set(k, v);
-  const res = await fetchImpl(url.toString(), {
-    headers: { Authorization: `Bearer ${c.token}`, Accept: 'application/json' },
-  });
-  if (!res.ok) throw new Error(`Corpay GET ${path} -> ${res.status}: ${await res.text()}`);
-  return res.json();
+  let retried = false;
+  let reauthed = false;
+  for (;;) {
+    await sleep(150); // gentle pacing — stay well under Corpay rate limits
+    let res;
+    try {
+      res = await fetchImpl(url.toString(), {
+        headers: { Authorization: `Bearer ${c.token}`, Accept: 'application/json' },
+      });
+    } catch (e) {
+      if (retried) throw e;
+      retried = true;
+      await sleep(2000);
+      continue;
+    }
+    if (res.ok) return res.json();
+    if (res.status === 401 && !reauthed && c.clientId && c.clientSecret && c.refreshToken) {
+      reauthed = true;
+      console.log('Corpay 401 — re-acquiring token via refresh_token grant...');
+      c.token = await corpayGetToken(fetchImpl, c);
+      continue;
+    }
+    if ((res.status === 429 || res.status >= 500) && !retried) {
+      retried = true;
+      await sleep(2000);
+      continue;
+    }
+    throw new Error(`Corpay GET ${path} -> ${res.status}: ${await res.text()}`);
+  }
 }
 
-// List all expense ids of a given Type across the configured states (paginated),
+// List all expense ids of a given Type across the given states (paginated),
 // keeping only shallow items inside the lookback window.
-async function listExpenseIds(fetchImpl, c, type, cutoffMs) {
+async function listExpenseIds(fetchImpl, c, type, cutoffMs, states = c.syncStates) {
   const ids = [];
-  for (const state of c.syncStates) {
+  for (const state of states) {
     let offset = 0;
     for (;;) {
       const resp = await corpayGet(fetchImpl, c, '/v2/expenses',
@@ -293,45 +330,78 @@ async function nsGetInternalId(fetchImpl, cfg, path) {
 
 // -------------------- mapping --------------------
 
-// Expense lines -> NetSuite expense.items[]. Every line gets the default tax code.
+// Tax code by expense currency (NS_TAX_CODE_ID_<ISO>, e.g. EU reverse charge for EUR),
+// falling back to the default. Corpay carries no tax data, so currency is the only proxy.
+function taxCodeFor(expense, ns) {
+  const cur = expense.currency ? String(expense.currency).toUpperCase() : '';
+  return { id: ns.taxCodeByCurrency[cur] || ns.defaultTaxCodeId };
+}
+
+// NetSuite currency internal id for the expense's ISO code (NS_CURRENCY_ID_<ISO>).
+// Unmapped/absent -> null: the transaction then uses the vendor's default currency AND the
+// default bank account, so bill, payment and bank currencies can never diverge.
+function currencyIdFor(expense, ns) {
+  const cur = expense.currency ? String(expense.currency).toUpperCase() : '';
+  return (cur && ns.currencyIdByCode[cur]) || null;
+}
+
+// Expense lines -> NetSuite expense.items[].
 // Corpay amounts are GROSS (VAT-inclusive splits of the payable total), so lines are sent
 // as `grossAmt` (not net `amount`): NetSuite back-computes net from the tax code and the
 // bill total equals the Corpay amount. Net `amount` + taxCode would add VAT on top and
 // leave every bill ~25% open after the matching payment.
+// The bill total MUST equal expense.amount — the payment applies exactly that — so splits
+// are used only when they reconcile: zero lines are dropped, and if a line is negative or
+// the sum differs from the header amount, the bill falls back to one header-total line
+// (logged loudly) instead of booking wrong money.
 function mapLines(expense, ns) {
-  const taxCode = { id: ns.defaultTaxCodeId };
-  const lines = Array.isArray(expense.lines) ? expense.lines : [];
-  if (lines.length > 0) {
-    return lines.map((l) => {
-      const item = {
-        account: { id: numericId(l.category?.externalId) || ns.defaultExpenseAccountId },
-        grossAmt: money(l.amount),
-        taxCode,
-      };
-      if (l.note) item.memo = l.note;
-      return item;
-    });
-  }
-  // No lines: single line from the header category for the full (gross) amount.
-  return [{
+  const taxCode = taxCodeFor(expense, ns);
+  const headerLine = [{
     account: { id: numericId(expense.category?.externalId) || ns.defaultExpenseAccountId },
     grossAmt: money(expense.amount),
     taxCode,
   }];
+  const all = Array.isArray(expense.lines) ? expense.lines : [];
+  const lines = all.filter((l) => Number(l.amount || 0) !== 0);
+  if (lines.length === 0) return headerLine;
+
+  const sumMinor = all.reduce((s, l) => s + Number(l.amount || 0), 0);
+  const anyNegative = lines.some((l) => Number(l.amount) < 0);
+  if (anyNegative || sumMinor !== Number(expense.amount)) {
+    const why = anyNegative
+      ? 'contain negative amounts'
+      : `sum ${money(sumMinor)} != total ${money(expense.amount)}`;
+    console.log(`WARN ${expense.id}: line splits ${why} — booking single header-total line`);
+    return headerLine;
+  }
+  return lines.map((l) => {
+    const item = {
+      account: { id: numericId(l.category?.externalId) || ns.defaultExpenseAccountId },
+      grossAmt: money(l.amount),
+      taxCode,
+    };
+    if (l.note) item.memo = l.note;
+    return item;
+  });
 }
 
 // Vendor bill / vendor credit share the same body shape (kind = 'bill' | 'credit').
-// Currency is intentionally omitted so NetSuite defaults it from the vendor record.
+// Currency is set explicitly when NS_CURRENCY_ID_<ISO> maps it; otherwise it is omitted
+// and NetSuite defaults it from the vendor record.
 function buildBillBody(expense, vendorId, ns, kind) {
   const body = {
     externalId: eid(kind, expense.id),
     entity: { id: vendorId },
     subsidiary: { id: ns.subsidiaryId },
-    tranId: String(expense.reference || expense.number || '').slice(0, 45),
+    // Falls back to the Corpay expense id so tranId is never blank (some accounts
+    // reject an empty Reference No.).
+    tranId: String(expense.reference || expense.number || expense.id).slice(0, 45),
     tranDate: dateOnly(expense.referenceDate),
     memo: `Corpay One expense ${expense.id}`,
     expense: { items: mapLines(expense, ns) },
   };
+  const curId = currencyIdFor(expense, ns);
+  if (curId) body.currency = { id: curId };
   // approvalStatus exists only on vendorBill (2 = Approved; Corpay is the approval system
   // of record). vendorCredit has no such field and NetSuite 400s on the unknown property.
   if (kind === 'bill') body.approvalStatus = { id: '2' };
@@ -342,8 +412,12 @@ function buildBillBody(expense, vendorId, ns, kind) {
 
 function buildPaymentBody(expense, vendorId, billInternalId, ns) {
   const cur = expense.currency ? expense.currency.toUpperCase() : '';
-  const bank = ns.bankAccountByCurrency[cur] || ns.bankAccountId;
-  return {
+  const curId = currencyIdFor(expense, ns);
+  // A currency-specific bank account is only safe when the currency is explicitly set on
+  // the transactions; with a vendor-default currency, stick to the default bank so the
+  // payment, bill and bank currencies always agree.
+  const bank = (curId && ns.bankAccountByCurrency[cur]) || ns.bankAccountId;
+  const body = {
     externalId: eid('pay', expense.id),
     entity: { id: vendorId },
     subsidiary: { id: ns.subsidiaryId },
@@ -353,6 +427,8 @@ function buildPaymentBody(expense, vendorId, billInternalId, ns) {
     memo: `Corpay One payment ${expense.id}`,
     apply: { items: [{ doc: { id: billInternalId }, apply: true, amount: money(expense.amount) }] },
   };
+  if (curId) body.currency = { id: curId };
+  return body;
 }
 
 // -------------------- per-record processing --------------------
@@ -392,7 +468,10 @@ async function processExpense(fetchImpl, config, expense, kind, stats) {
   }
 
   const body = buildBillBody(expense, vendorId, ns, kind);
-  const internalId = await nsWrite(fetchImpl, ns, 'PUT', `/record/v1/${record}/eid:${eid(kind, expense.id)}`, body);
+  // ?replace=expense: NetSuite REST MERGES sublists on update by default (incoming lines
+  // without line ids are APPENDED). replace makes each upsert a full sublist replace, so
+  // re-upserting an unchanged/edited bill can never duplicate lines.
+  const internalId = await nsWrite(fetchImpl, ns, 'PUT', `/record/v1/${record}/eid:${eid(kind, expense.id)}?replace=expense`, body);
   stats[counter]++;
   console.log(`${label} ${eid(kind, expense.id)} upserted (ns id ${internalId || '?'})`);
 
@@ -423,7 +502,7 @@ async function createPayment(fetchImpl, config, expense, vendorId, billInternalI
 export async function runSync(config, fetchImpl = globalThis.fetch) {
   // Local copy so acquiring a token never mutates the caller's config object.
   const c = { ...config.corpay };
-  const stats = { bills: 0, credits: 0, payments: 0, settled: 0, skipped: 0, errors: 0 };
+  const stats = { bills: 0, credits: 0, payments: 0, settled: 0, skipped: 0, warnings: 0, errors: 0 };
 
   if (!c.token) {
     console.log('Acquiring Corpay token via refresh_token grant...');
@@ -453,6 +532,32 @@ export async function runSync(config, fetchImpl = globalThis.fetch) {
 
   for (const id of billIds) await runOne(id, 'bill');
   for (const id of creditIds) await runOne(id, 'credit');
+
+  // Reversal check: a document cancelled/refunded in Corpay AFTER it was synced would
+  // otherwise sit in NetSuite as an approved payable forever. Posted financials are never
+  // auto-deleted — they are surfaced loudly for manual reversal instead.
+  for (const [type, kind, record] of [['Bill', 'bill', 'vendorBill'], ['Creditnote', 'credit', 'vendorCredit']]) {
+    let reversedIds = [];
+    try {
+      reversedIds = dedupe(await listExpenseIds(fetchImpl, c, type, cutoffMs, ['Cancelled', 'Refunded']));
+    } catch (e) {
+      stats.errors++;
+      console.error(`ERROR listing reversals (${type}): ${e.message}`);
+      continue;
+    }
+    for (const id of reversedIds) {
+      try {
+        const existing = await nsGetInternalId(fetchImpl, config.ns, `/record/v1/${record}/eid:${eid(kind, id)}?fields=id`);
+        if (existing) {
+          stats.warnings++;
+          console.log(`WARN ${kind} ${id}: cancelled/refunded in Corpay but ${record} ${existing} still exists in NetSuite — reverse manually`);
+        }
+      } catch (e) {
+        stats.errors++;
+        console.error(`ERROR reversal check ${kind} ${id}: ${e.message}`);
+      }
+    }
+  }
 
   console.log('SUMMARY ' + Object.entries(stats).map(([k, v]) => `${k}=${v}`).join(' '));
   return stats;
