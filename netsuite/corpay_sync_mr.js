@@ -129,7 +129,12 @@ define(['N/https', 'N/record', 'N/search', 'N/query', 'N/runtime', 'N/log', 'N/e
         // Vendor auto-match is ON unless explicitly set to 'false'. When enabled, a bill/credit
         // whose vendor has no numeric NetSuite externalId is matched by CVR/VAT then exact name
         // (see resolveVendor); when disabled, such a document is skipped as before.
-        vendorAutomatch: String(g('custscript_cp_vendor_automatch')).toLowerCase() !== 'false'
+        vendorAutomatch: String(g('custscript_cp_vendor_automatch')).toLowerCase() !== 'false',
+        // Vendor auto-CREATE is ON unless explicitly set to 'false'. When auto-match finds NO
+        // candidate at all (no CVR and no exact-name hit — an ambiguous name still SKIPs, so a
+        // duplicate is never created), the vendor is created in NetSuite so the document posts in
+        // the same run. Requires auto-match on; when off, such a document is skipped as before.
+        vendorAutocreate: String(g('custscript_cp_vendor_autocreate')).toLowerCase() !== 'false'
       };
     }
 
@@ -329,6 +334,14 @@ define(['N/https', 'N/record', 'N/search', 'N/query', 'N/runtime', 'N/log', 'N/e
       return _vendorListCache;
     }
 
+    // Internal id of the vendor carrying this externalid, or null. Used as the idempotent
+    // fallback when an auto-create races another writer and hits the externalid unique index.
+    function findVendorByExternalId(externalId) {
+      var safe = String(externalId).replace(/'/g, "''");
+      var rows = runSuiteQL("SELECT id FROM vendor WHERE externalid = '" + safe + "'");
+      return rows.length ? String(rows[0].id) : null;
+    }
+
     // Corpay vendor detail (name + identification), cached per vendorId per run. Best-effort:
     // a failed GET returns null (matching continues on whatever the shallow expense carries).
     function corpayVendorDetail(p, vendorId) {
@@ -419,7 +432,64 @@ define(['N/https', 'N/record', 'N/search', 'N/query', 'N/runtime', 'N/log', 'N/e
         }
       }
 
+      // No candidate at all (and the name was not ambiguous). Auto-create the vendor when enabled
+      // so the booked document can post this run; otherwise skip as before.
+      if (p.vendorAutocreate) {
+        return createVendor(p, expense, detail, corpayName);
+      }
       return { skip: 'vendor "' + corpayName + '" not auto-matched (no CVR/name candidates)' + tail };
+    }
+
+    // Auto-create a NetSuite vendor when auto-match found no candidate. Returns { id, created } on
+    // success or { skip } when there is nothing to create from. The externalid
+    // 'corpay-vendor-{corpayVendorId}' is the idempotency key: a retry or a concurrent run resolves
+    // to the SAME record via the externalid unique index — a duplicate-externalid save error falls
+    // back to a lookup by that externalid. On success the vendor is added to the per-run cache and
+    // its internal id is stamped back to Corpay, exactly like a match.
+    function createVendor(p, expense, detail, corpayName) {
+      var vendor = expense.vendor || {};
+      var corpayVendorId = vendor.id;
+      var name = String((detail && detail.name) || vendor.name || '').trim();
+      if (!name || corpayVendorId === null || corpayVendorId === undefined || corpayVendorId === '') {
+        return { skip: 'vendor "' + corpayName + '" has no name/id to auto-create from' };
+      }
+      var externalId = 'corpay-vendor-' + corpayVendorId;
+      var identification = (detail && detail.identification) || '';
+      var email = (detail && detail.email) || '';
+
+      var newId;
+      var created = false;
+      try {
+        var rec = record.create({ type: record.Type.VENDOR, isDynamic: true });
+        rec.setValue({ fieldId: 'externalid', value: externalId });
+        rec.setValue({ fieldId: 'companyname', value: name });
+        rec.setValue({ fieldId: 'isperson', value: false });
+        rec.setValue({ fieldId: 'subsidiary', value: p.subsidiary });
+        if (identification) { rec.setValue({ fieldId: 'vatregnumber', value: String(identification) }); }
+        if (email) { rec.setValue({ fieldId: 'email', value: email }); }
+        // Bank/payment details are intentionally omitted: payments flow from Corpay, not NetSuite.
+        newId = rec.save({ enableSourcing: true, ignoreMandatoryFields: true });
+        created = true;
+      } catch (e) {
+        // A concurrent run / retry may have already created this vendor: the externalid unique
+        // index rejects the duplicate. Resolve to the existing record instead of failing.
+        var existing = findVendorByExternalId(externalId);
+        if (existing) {
+          newId = existing;
+          log.audit('NOTE', 'vendor "' + name + '" already existed (ns id ' + newId
+            + ') — reusing (duplicate externalid on create)');
+        } else {
+          throw e;
+        }
+      }
+
+      if (created) {
+        log.audit('CREATED', 'vendor "' + name + '" in NetSuite (ns id ' + newId + ')');
+      }
+      // Keep the per-run cache consistent so a later document for the same vendor matches in-memory.
+      vendorList().push({ id: String(newId), companyname: name, vatregnumber: identification });
+      stampVendorExternalId(p, corpayVendorId, newId);
+      return { id: String(newId), created: created };
     }
 
     // ---------------------------------------------------------------- record building
@@ -635,6 +705,8 @@ define(['N/https', 'N/record', 'N/search', 'N/query', 'N/runtime', 'N/log', 'N/e
           return;
         }
         var vendorId = vres.id;
+        // A freshly auto-created vendor is tallied as its own outcome (and already stamped back).
+        if (vres.created) { record_outcome(context, 'vendors', id); }
 
         var payable = kind === 'bill' && isPaid(expense);
 
@@ -665,7 +737,7 @@ define(['N/https', 'N/record', 'N/search', 'N/query', 'N/runtime', 'N/log', 'N/e
     }
 
     function summarize(summary) {
-      var totals = { bills: 0, credits: 0, payments: 0, settled: 0, skipped: 0, warnings: 0, errors: 0 };
+      var totals = { bills: 0, credits: 0, payments: 0, vendors: 0, settled: 0, skipped: 0, warnings: 0, errors: 0 };
       summary.output.iterator().each(function (key, value) {
         if (totals.hasOwnProperty(value)) { totals[value] += 1; }
         return true;
@@ -681,9 +753,9 @@ define(['N/https', 'N/record', 'N/search', 'N/query', 'N/runtime', 'N/log', 'N/e
       });
 
       var line = 'bills=' + totals.bills + ' credits=' + totals.credits
-        + ' payments=' + totals.payments + ' settled=' + totals.settled
-        + ' skipped=' + totals.skipped + ' warnings=' + totals.warnings
-        + ' errors=' + totals.errors;
+        + ' payments=' + totals.payments + ' vendors=' + totals.vendors
+        + ' settled=' + totals.settled + ' skipped=' + totals.skipped
+        + ' warnings=' + totals.warnings + ' errors=' + totals.errors;
       log.audit('SUMMARY', line);
 
       if (totals.errors > 0) {

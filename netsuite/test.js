@@ -44,7 +44,9 @@ const queryMock = (rowsByKey, calls) => ({
     if (calls) calls.push(query);
     let rows = [];
     for (const key in rowsByKey) { if (query.includes(key)) { rows = rowsByKey[key]; break; } }
-    return { asMappedResults: () => rows };
+    // Return a fresh array (as real SuiteQL does) so a caller that mutates its result — e.g.
+    // vendorList().push(newVendor) after an auto-create — cannot contaminate the canned fixtures.
+    return { asMappedResults: () => rows.slice() };
   }
 });
 // Valid, active configuration matching P — preflight passes, account/vendor maps empty by default.
@@ -86,9 +88,10 @@ function makeRec(type, id) {
 }
 function recordMock(state) {
   return {
-    Type: { VENDOR_BILL: 'vendorbill', VENDOR_CREDIT: 'vendorcredit', VENDOR_PAYMENT: 'vendorpayment' },
+    Type: { VENDOR_BILL: 'vendorbill', VENDOR_CREDIT: 'vendorcredit', VENDOR_PAYMENT: 'vendorpayment', VENDOR: 'vendor' },
     create: ({ type }) => {
-      const r = makeRec(type, type === 'vendorbill' ? 'BILL-NEW' : type === 'vendorcredit' ? 'CREDIT-NEW' : 'PAY-NEW');
+      const idByType = { vendorbill: 'BILL-NEW', vendorcredit: 'CREDIT-NEW', vendor: 'VENDOR-NEW' };
+      const r = makeRec(type, idByType[type] || 'PAY-NEW');
       state.created.push(r); return r;
     },
     load: ({ type, id }) => {
@@ -144,7 +147,15 @@ const DETAILS = {
     vendor: { id: 'cv-2', name: 'Altibox', externalId: null }, category: { externalId: '235' }, lines: [] },
   'bill-ambig': { id: 'bill-ambig', reference: 'INV-AMBIG', amount: 7000, currency: 'DKK',
     state: 'Booked', referenceDate: '2026-06-09T00:00:00Z',
-    vendor: { id: 'cv-3', name: 'Duplicate Co', externalId: null }, category: { externalId: '235' }, lines: [] }
+    vendor: { id: 'cv-3', name: 'Duplicate Co', externalId: null }, category: { externalId: '235' }, lines: [] },
+  // Auto-create candidates: vendor.id present, no numeric externalId, and (via VENDOR_DETAILS) no
+  // CVR match and no exact-name match against NS_VENDORS -> nothing to match -> auto-create.
+  'bill-new': { id: 'bill-new', reference: 'INV-NEW', amount: 9000, currency: 'DKK',
+    state: 'Booked', referenceDate: '2026-06-10T00:00:00Z',
+    vendor: { id: 'cv-4', name: 'Brand New Vendor', externalId: null }, category: { externalId: '235' }, lines: [] },
+  'bill-noname': { id: 'bill-noname', reference: 'INV-NONAME', amount: 3000, currency: 'DKK',
+    state: 'Booked', referenceDate: '2026-06-11T00:00:00Z',
+    vendor: { id: 'cv-5', name: '', externalId: null }, category: { externalId: '235' }, lines: [] }
 };
 const jsonRes = (obj, code = 200) => ({ code, body: JSON.stringify(obj) });
 const detailHandler = (url) => {
@@ -156,7 +167,9 @@ const detailHandler = (url) => {
 const VENDOR_DETAILS = {
   'cv-1': { name: 'Apcoa Parking Denmark', identification: 'DK 12 34 56 78' }, // CVR-only match
   'cv-2': { name: 'Altibox Danmark A/S', identification: null },              // name-only match
-  'cv-3': { name: 'Duplicate Co', identification: null }                      // ambiguous name
+  'cv-3': { name: 'Duplicate Co', identification: null },                     // ambiguous name
+  'cv-4': { name: 'Brand New Vendor ApS', identification: 'DK 55 55 55 55', email: 'hello@bnv.dk' }, // no match -> create
+  'cv-5': { name: '', identification: null }                                 // empty name -> nothing to create
 };
 // NetSuite active vendors for auto-match SuiteQL.
 const NS_VENDORS = [
@@ -518,6 +531,71 @@ function main() {
     assert.ok(log.rec.some((r) => r[1] === 'SKIP' && /has no numeric NetSuite externalId/.test(r[2])),
       'falls back to the original skip message');
     console.log('ok  vendor auto-match (iv) disabled -> old skip, no vendor SuiteQL');
+  }
+
+  // ============================================ vendor auto-create (v) no candidate -> create + post
+  {
+    const rows = { ...DEFAULT_QUERY_ROWS, companyname: NS_VENDORS };
+    const log = logCapture();
+    const h = harness({ handler: automatchHandler, queryRows: rows, log });
+    h.run('bill-new', 'bill');
+    const vendor = h.state.created.find((r) => r.type === 'vendor');
+    const bill = h.state.created.find((r) => r.type === 'vendorbill');
+    assert.ok(vendor, 'a vendor record is created when no candidate matches');
+    assert.equal(vendor.fields.externalid, 'corpay-vendor-cv-4', 'idempotency externalid corpay-vendor-{id}');
+    assert.equal(vendor.fields.companyname, 'Brand New Vendor ApS', 'companyname from Corpay detail name');
+    assert.equal(vendor.fields.isperson, false, 'created as a company, not a person');
+    assert.equal(vendor.fields.subsidiary, '10', 'created under the configured subsidiary');
+    assert.equal(vendor.fields.vatregnumber, 'DK 55 55 55 55', 'CVR/VAT carried from detail.identification');
+    assert.equal(vendor.fields.email, 'hello@bnv.dk', 'email carried from detail.email');
+    assert.ok(bill, 'the bill posts in the same run');
+    assert.equal(bill.fields.entity, 'VENDOR-NEW', 'bill entity = the newly created vendor internal id');
+    assert.equal(h.patches.length, 1, 'created vendor internal id stamped back to Corpay');
+    assert.ok(/\/vendors\/cv-4\/external-id$/.test(h.patches[0].url), 'stamp-back targets the Corpay vendor');
+    assert.equal(JSON.parse(h.patches[0].body).externalId, 'VENDOR-NEW', 'stamp carries the new internal id');
+    assert.ok(log.rec.some((r) => r[1] === 'CREATED' && /Brand New Vendor ApS/.test(r[2])), 'logged CREATED');
+    assert.deepEqual(h.outVals().sort(), ['bills', 'vendors'], 'both a vendors and a bills outcome emitted');
+    console.log('ok  vendor auto-create (v) no candidate -> vendor created + bill posted + stamp-back');
+  }
+
+  // ============================================ vendor auto-create (vi) disabled -> old skip
+  {
+    const rows = { ...DEFAULT_QUERY_ROWS, companyname: NS_VENDORS };
+    const log = logCapture();
+    const h = harness({ params: { ...P, custscript_cp_vendor_autocreate: 'false' },
+      handler: automatchHandler, queryRows: rows, log });
+    h.run('bill-new', 'bill');
+    assert.equal(h.state.created.length, 0, 'autocreate disabled -> nothing created');
+    assert.equal(h.patches.length, 0, 'no stamp-back when skipped');
+    assert.deepEqual(h.outVals(), ['skipped']);
+    assert.ok(log.rec.some((r) => r[1] === 'SKIP' && /no CVR\/name candidates/.test(r[2])),
+      'falls back to the not-auto-matched skip message');
+    console.log('ok  vendor auto-create (vi) autocreate=false -> old skip, nothing created');
+  }
+
+  // ============================================ vendor auto-create (vii) empty name -> skip
+  {
+    const rows = { ...DEFAULT_QUERY_ROWS, companyname: NS_VENDORS };
+    const log = logCapture();
+    const h = harness({ handler: automatchHandler, queryRows: rows, log });
+    h.run('bill-noname', 'bill');
+    assert.equal(h.state.created.length, 0, 'no name -> nothing created');
+    assert.equal(h.patches.length, 0, 'no stamp-back');
+    assert.deepEqual(h.outVals(), ['skipped']);
+    assert.ok(log.rec.some((r) => r[1] === 'SKIP' && /no name\/id to auto-create from/.test(r[2])),
+      'SKIP states there is no name/id to auto-create from');
+    console.log('ok  vendor auto-create (vii) empty vendor name -> skip, nothing created');
+  }
+
+  // ============================================ ambiguous name still SKIPs (never auto-creates)
+  {
+    const rows = { ...DEFAULT_QUERY_ROWS, companyname: NS_VENDORS };
+    const h = harness({ handler: automatchHandler, queryRows: rows }); // autocreate default ON
+    h.run('bill-ambig', 'bill');
+    assert.equal(h.state.created.length, 0, 'ambiguous name never auto-creates (would guarantee a duplicate)');
+    assert.equal(h.patches.length, 0, 'no stamp-back on ambiguous skip');
+    assert.deepEqual(h.outVals(), ['skipped']);
+    console.log('ok  vendor auto-create: ambiguous name still SKIPs even with autocreate on');
   }
 
   console.log('\nAll tests passed.');

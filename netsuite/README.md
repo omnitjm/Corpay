@@ -78,6 +78,7 @@ account (Omnit ApS) are pre-filled — verify before go-live.
 | `custscript_cp_default_taxcode` | Free-Form Text | **yes** | `18` (S-DK standard 25% moms) |
 | `custscript_cp_taxcode_eur` | Free-Form Text | no | `149` (ESSP-DK EU reverse charge) — tax code used for EUR expenses instead of the default; without it, EUR bills book Danish 25% input VAT |
 | `custscript_cp_vendor_automatch` | Free-Form Text | no | vendor auto-match toggle. Empty/anything except `false` = **enabled** (default); `false` = disabled (only vendors with a numeric `externalId` sync, as before). See *How mapping is resolved* |
+| `custscript_cp_vendor_autocreate` | Free-Form Text | no | vendor auto-**create** toggle. Empty/anything except `false` = **enabled** (default); `false` = disabled. When enabled and auto-match finds **no** candidate (no CVR and no exact-name hit — an *ambiguous* name never auto-creates), the vendor is created in NetSuite so the document posts the same run. Requires `custscript_cp_vendor_automatch` on. See *How mapping is resolved* |
 | `custscript_cp_notify_email` | Free-Form Text | no | ops email; a single summary email is sent only when a run has errors |
 
 > The token: set **either** `custscript_cp_token_secret` (preferred) **or**
@@ -117,25 +118,49 @@ vendor's `externalId` (`PATCH /external/v2/teams/{teamId}/vendors/{vendorId}/ext
   (`teams.vendors.all` / `teams.vendors.create`). Without it the PATCH fails, is logged as a
   `NOTE`, and the run continues — the vendor is still matched, it just re-matches from cache on the
   next run instead of resolving instantly.
-- Set `custscript_cp_vendor_automatch = false` to turn matching off; then only vendors whose
-  Corpay `externalId` already holds a numeric NetSuite id sync, and everything else is skipped
-  (the pre-auto-match behaviour). Even with matching on, a vendor that cannot be matched
-  unambiguously is skipped with an actionable `SKIP` line telling you to set its `externalId`.
+- When auto-match finds **no** candidate at all (no CVR hit **and** no exact-name hit), the script
+  **auto-creates** the vendor in NetSuite (`custscript_cp_vendor_autocreate`, on by default) so the
+  booked Corpay document can post in the same run. The new vendor is created with
+  `externalid = corpay-vendor-{corpayVendorId}` (the idempotency key — a retry or an overlapping run
+  resolves to the same record via the externalid unique index), `companyname`, `isperson = false`,
+  the deployment's `subsidiary`, and — when Corpay supplies them — `vatregnumber` (CVR/VAT) and
+  `email`. Its internal id is then stamped back to Corpay exactly like a match. Created vendors carry
+  **name / CVR / email / subsidiary only** — no bank or payment details, because payments flow from
+  Corpay, not NetSuite. Review each auto-created vendor for completeness (payment terms, default
+  category/expense account, 1099/e-invoicing fields, etc.) as part of normal AP hygiene.
+- **Duplicate risk.** A NetSuite vendor that already exists **under a different name and without a
+  CVR number** will not be matched (nothing to match on), so auto-create will make a **duplicate**.
+  To prevent this, **keep the CVR/VAT number (`vatregnumber`) populated on your NetSuite vendors** —
+  CVR matches regardless of name differences. An *ambiguous* name (several NetSuite vendors share the
+  name) is deliberately **never** auto-created — that would guarantee a duplicate — it is skipped
+  instead so you can disambiguate or stamp the `externalId`.
+- Set `custscript_cp_vendor_automatch = false` to turn matching (and therefore auto-create) off;
+  then only vendors whose Corpay `externalId` already holds a numeric NetSuite id sync, and
+  everything else is skipped (the pre-auto-match behaviour). To keep matching but **disable
+  auto-create only**, set `custscript_cp_vendor_autocreate = false`: unmatched vendors are then
+  skipped with an actionable `SKIP` line telling you to set the `externalId`, and no vendor records
+  are created.
 
 ## How mapping is resolved
 
 Every run resolves three things per document, each as a short fallback chain:
 
-- **Vendor** (`externalId` → CVR → exact name → skip):
+- **Vendor** (`externalId` → CVR → exact name → auto-create / skip):
   1. numeric Corpay `vendor.externalId` → used directly as the NetSuite vendor internal id;
   2. else (auto-match on) **CVR/VAT**: digits-only of the Corpay vendor's `identification` vs
      digits-only of each NetSuite vendor's `vatregnumber` — matched only when **exactly one**
      NetSuite vendor matches;
   3. else **exact name**: normalized (lowercase, collapsed whitespace, trimmed) Corpay vendor name
-     vs NetSuite `companyname` — matched only when **exactly one** matches;
-  4. else **skip** the document (no candidate, or ambiguous → several candidates), logged with the
-     count so you know whether to disambiguate or just stamp the `externalId`.
-  On a match the id is stamped back to Corpay (best-effort, see above).
+     vs NetSuite `companyname` — matched only when **exactly one** matches; if **several** share the
+     name it is **ambiguous → skip** (never auto-created, to avoid a guaranteed duplicate), logged
+     with the count so you know whether to disambiguate or just stamp the `externalId`;
+  4. else (no candidate at all) **auto-create** the vendor in NetSuite when
+     `custscript_cp_vendor_autocreate` is on (default) — created with name / CVR / email / subsidiary
+     and `externalid = corpay-vendor-{corpayVendorId}` (idempotent), then posted the same run; when
+     auto-create is off, **skip** the document with an actionable message telling you to set the
+     `externalId`.
+  On a match **or** an auto-create the internal id is stamped back to Corpay (best-effort, see
+  above), and an auto-create is tallied as a `vendors` outcome in the run `SUMMARY`.
 - **Expense account** (`externalId` → account number → default):
   1. numeric category `externalId` → used directly as the NetSuite account internal id;
   2. else category **`number`** matched against the NetSuite account **`acctnumber`** (e.g. Corpay
@@ -174,8 +199,10 @@ zero output.
 ## Reading the logs
 Script record → **Deployments** → open the deployment → **Execution Log**:
 - `Audit` — `getInputData` counts, one line per document (`BILL corpay-bill-… upserted (ns id …)`,
-  `CREDIT …`, `PAY …`, `SETTLED …`, `SKIP …`, `WARN …`), and a final
-  `SUMMARY bills=… credits=… payments=… settled=… skipped=… warnings=… errors=…`.
+  `CREDIT …`, `PAY …`, `SETTLED …`, `SKIP …`, `WARN …`), any vendor auto-create
+  (`CREATED vendor "…" in NetSuite (ns id …)`) and vendor `MATCH …` lines, and a final
+  `SUMMARY bills=… credits=… payments=… vendors=… settled=… skipped=… warnings=… errors=…`
+  (`vendors` = vendors auto-created this run).
 - `WARN` lines need attention but never block the run: **line splits that don't sum to the
   payable** (the document is booked as one header-total line so the bill total always equals the
   payment), and **cancelled/refunded Corpay expenses that still exist in NetSuite** (posted
