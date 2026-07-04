@@ -79,13 +79,21 @@ never deleted or voided automatically — reversing is a human decision.
    Corpay vendor's `identification` is compared digits-only against NetSuite
    `vatregnumber`. A unique hit wins.
 3. **Auto-match by exact company name** (case/whitespace-insensitive). A unique
-   hit wins; multiple same-name vendors → skip (ambiguous).
-4. Otherwise the document is **skipped** with an actionable log line.
+   hit wins; multiple same-name vendors → skip (ambiguous — never guessed, never
+   auto-created).
+4. **Auto-create** (`CORPAY_VENDOR_AUTOCREATE`, on by default): no candidate at
+   all → the vendor is created in NetSuite (name, CVR, email, subsidiary;
+   idempotent via `externalId corpay-vendor-{id}`) and the document posts in the
+   same run. Keep CVR numbers filled in on NetSuite vendors to prevent
+   duplicates of differently-spelled existing vendors.
+5. With auto-create disabled, the document is **skipped** with an actionable log
+   line instead.
 
-A successful auto-match is **stamped back** onto the Corpay vendor
+A successful match or creation is **stamped back** onto the Corpay vendor
 (`PATCH .../vendors/{id}/external-id`, requires a vendor-write scope) so the
 next run resolves directly; without the scope it simply re-matches each run.
-Vendors are **never created** — that stays a deliberate human decision.
+See **`docs/MAPPING.md`** for the full mapping guide (accounts, unmatched
+vendors, troubleshooting).
 
 **Expense line → GL account** (per line, in order):
 
@@ -139,6 +147,7 @@ fills in anything missing.
 | `CORPAY_SYNC_STATES` | no | `Booked,Initialized,Paid` | Comma-separated states to pull |
 | `CORPAY_LOOKBACK_DAYS` | no | `90` | Only sync expenses whose `paymentDate`/`referenceDate` is within the last N days. `0` = unlimited (scan all history). Bounds runtime as history grows |
 | `CORPAY_VENDOR_AUTOMATCH` | no | `true` | Auto-match unstamped vendors by CVR, then exact name, and stamp the match back. `false` = require manual stamping |
+| `CORPAY_VENDOR_AUTOCREATE` | no | `true` | Create the vendor in NetSuite when auto-match finds no candidate at all. `false` = skip such documents |
 | `NS_ACCOUNT_ID` | **yes** | – | e.g. `1234567_SB1` |
 | `NS_CONSUMER_KEY` | **yes** | – | TBA integration consumer key |
 | `NS_CONSUMER_SECRET` | **yes** | – | TBA integration consumer secret |

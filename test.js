@@ -130,6 +130,9 @@ function makeStub(records, { paymentExists = false, reversedBillIds = [], corpay
         return paymentExists ? json({ id: '3001' }) : json({}, 404);
       }
       if (method === 'GET' && path.includes('/vendorBill/eid:')) return json({ id: '1001' });
+      if (method === 'PUT' && path.includes('/vendor/eid:corpay-vendor-')) {
+        return noContent('/services/rest/record/v1/vendor/900');
+      }
       if (method === 'PUT' && path.includes('/vendorBill/eid:')) {
         return noContent('/services/rest/record/v1/vendorBill/1001');
       }
@@ -205,12 +208,22 @@ async function main() {
   const corpayPatches = [];
   const stats = await runSync(loadConfig(baseEnv), makeStub(records, { corpayPatches }));
 
-  assert.deepEqual(
-    { bills: stats.bills, credits: stats.credits, payments: stats.payments,
-      settled: stats.settled, skipped: stats.skipped, warnings: stats.warnings, errors: stats.errors },
-    { bills: 2, credits: 1, payments: 1, settled: 0, skipped: 1, warnings: 0, errors: 0 },
-    'expected 2 bills (one auto-matched), 1 credit, 1 payment, 1 skip',
+  assert.deepEqual(stats,
+    { bills: 3, credits: 1, payments: 1, vendors: 1, settled: 0, skipped: 0, warnings: 0, errors: 0 },
+    'expected 3 bills (one auto-matched, one with auto-created vendor), 1 credit, 1 payment',
   );
+
+  // Vendor auto-create: bill-2's vendor has no externalId, no CVR and no name match ->
+  // the vendor is CREATED in NetSuite (idempotent eid upsert) and the bill posts to it.
+  const vendorPut = find(records, 'PUT', '/vendor/eid:corpay-vendor-v2');
+  assert.ok(vendorPut, 'vendor auto-created via eid upsert');
+  assert.equal(vendorPut.body.companyName, 'Vendor Without ExternalId');
+  assert.equal(vendorPut.body.subsidiary.id, '10');
+  assert.equal(vendorPut.body.isPerson, false);
+  assert.equal(vendorPut.body.externalId, 'corpay-vendor-v2');
+  const b2Put = find(records, 'PUT', '/vendorBill/eid:corpay-bill-bill-2');
+  assert.ok(b2Put, 'bill for the auto-created vendor is posted in the same run');
+  assert.equal(b2Put.body.entity.id, '900', 'bill entity = the newly created vendor');
 
   // Vendor auto-match: bill-am's vendor has no externalId, but its CVR matches vendor 742;
   // the bill posts with entity 742 and the match is stamped back to Corpay.
@@ -219,9 +232,11 @@ async function main() {
   assert.equal(amPut.body.entity.id, '742', 'entity resolved via CVR match');
   assert.equal(amPut.body.expense.items[0].account.id, '235',
     'expense account resolved via category NUMBER (2201) against the chart of accounts');
-  assert.equal(corpayPatches.length, 1, 'match stamped back to Corpay once');
-  assert.ok(corpayPatches[0].path.includes('/vendors/v9/external-id'));
-  assert.deepEqual(corpayPatches[0].body, { source: 'netsuite', externalId: '742' });
+  assert.equal(corpayPatches.length, 2, 'both the CVR match and the created vendor stamped back');
+  const stampV9 = corpayPatches.find((p) => p.path.includes('/vendors/v9/'));
+  assert.deepEqual(stampV9.body, { source: 'netsuite', externalId: '742' });
+  const stampV2 = corpayPatches.find((p) => p.path.includes('/vendors/v2/'));
+  assert.deepEqual(stampV2.body, { source: 'netsuite', externalId: '900' });
 
   // Bill upsert: correct eid: URL + payload shape.
   const billPut = find(records, 'PUT', '/vendorBill/eid:corpay-bill-bill-1');
@@ -251,8 +266,16 @@ async function main() {
   // Bill total (sum of gross lines) equals the Corpay expense amount (125000 øre = 1250.00).
   assert.equal(items[0].grossAmt + items[1].grossAmt, 1250.0, 'gross lines sum to the Corpay payable total');
 
-  // Skip: bill-2's vendor has no externalId, no CVR and no name match -> never written.
-  assert.ok(!find(records, 'PUT', 'corpay-bill-bill-2'), 'unmatched vendor bill skipped');
+  // Autocreate disabled -> the unmatched vendor's bill is skipped instead of created.
+  {
+    const recs = [];
+    const s = await runSync(loadConfig({ ...baseEnv, CORPAY_VENDOR_AUTOCREATE: 'false' }),
+      makeStub(recs));
+    assert.equal(s.vendors, 0, 'no vendor created when autocreate is off');
+    assert.equal(s.skipped, 1, 'unmatched vendor bill skipped when autocreate is off');
+    assert.ok(!find(recs, 'PUT', '/vendor/eid:'), 'no vendor PUT when autocreate is off');
+    assert.ok(!find(recs, 'PUT', 'corpay-bill-bill-2'), 'bill not posted when vendor unresolved');
+  }
 
   // Credit upsert: gross amount, and NO approvalStatus (field does not exist on vendorCredit).
   const creditPut = find(records, 'PUT', '/vendorCredit/eid:corpay-credit-credit-1');
@@ -309,7 +332,7 @@ async function main() {
     makeStub(records2, { paymentExists: true, reversedBillIds: ['bill-gone'] }));
   assert.equal(stats2.payments, 0, 'existing payment is not re-created');
   assert.equal(stats2.settled, 1, 'settled bill counted in stats.settled');
-  assert.equal(stats2.bills, 1, 'only the unpaid auto-matched bill is re-upserted, not the settled one');
+  assert.equal(stats2.bills, 2, 'the unpaid bills are re-upserted, the settled one is not');
   assert.ok(!find(records2, 'POST', '/vendorPayment'), 'no POST vendorPayment when one already exists');
   assert.ok(find(records2, 'GET', '/vendorPayment/eid:corpay-pay-bill-1'), 'payment-existence check happens first');
   assert.ok(!find(records2, 'PUT', '/vendorBill/eid:corpay-bill-bill-1'), 'settled bill is NOT re-PUT');

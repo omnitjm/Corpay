@@ -108,6 +108,9 @@ export function loadConfig(env = loadEnv()) {
       // Auto-match unstamped Corpay vendors against NetSuite (CVR, then exact name)
       // and stamp the match back. 'false' disables and restores skip-only behavior.
       vendorAutomatch: env.CORPAY_VENDOR_AUTOMATCH !== 'false',
+      // When auto-match finds NO candidate at all, create the vendor in NetSuite so a
+      // document booked in Corpay always has somewhere to post. 'false' disables.
+      vendorAutocreate: env.CORPAY_VENDOR_AUTOCREATE !== 'false',
     },
     ns: {
       accountId: ns.NS_ACCOUNT_ID,
@@ -497,9 +500,48 @@ async function resolveVendor(ctx, expense, kind) {
   if (nm) {
     const hits = vendors.filter((v) => normName(v.companyname) === nm);
     if (hits.length === 1) return vendorMatched(ctx, expense, hits[0], 'name');
+    // Ambiguity never auto-creates — that would guarantee a duplicate.
     if (hits.length > 1) return skip(`is ambiguous (${hits.length} NetSuite vendors share the name)`);
   }
+  if (ctx.corpay.vendorAutocreate) return createNsVendor(ctx, expense, detail, kind);
   return skip('was not auto-matched (no CVR or exact-name candidate in NetSuite)');
+}
+
+// No NetSuite candidate at all: create the vendor so the booked Corpay document can post.
+// Idempotent via externalId corpay-vendor-{corpayVendorId} (PUT eid: upsert), so retries
+// and overlapping runs resolve to the same record. Only name/CVR/email/subsidiary are set —
+// bank details are not needed (payments flow from Corpay, not NetSuite).
+async function createNsVendor(ctx, expense, detail, kind) {
+  const name = String(detail?.name || expense.vendor?.name || '').trim();
+  const cvId = expense.vendor?.id;
+  if (!name || cvId == null) {
+    ctx.stats.skipped++;
+    console.log(`SKIP ${kind} ${expense.id}: vendor has no name/id to auto-create from`);
+    return null;
+  }
+  const body = {
+    externalId: `corpay-vendor-${cvId}`,
+    companyName: name,
+    isPerson: false,
+    subsidiary: { id: ctx.ns.subsidiaryId },
+  };
+  if (detail?.identification) body.vatRegNumber = String(detail.identification);
+  if (detail?.email) body.email = detail.email;
+  const curId = currencyIdFor(expense, ctx.ns);
+  if (curId) body.currency = { id: curId };
+
+  const id = await nsWrite(ctx.fetchImpl, ctx.ns, 'PUT', `/record/v1/vendor/eid:corpay-vendor-${cvId}`, body);
+  if (!id) {
+    ctx.stats.errors++;
+    console.error(`ERROR ${kind} ${expense.id}: vendor create for "${name}" returned no internal id`);
+    return null;
+  }
+  ctx.stats.vendors++;
+  console.log(`CREATED vendor "${name}" in NetSuite (ns id ${id})`);
+  if (ctx.nsVendors) {
+    ctx.nsVendors.push({ id, companyname: name, vatregnumber: detail?.identification || null });
+  }
+  return vendorMatched(ctx, expense, { id }, 'created');
 }
 
 async function vendorMatched(ctx, expense, vendor, how) {
@@ -690,7 +732,7 @@ async function createPayment(ctx, expense, vendorId, billInternalId) {
 export async function runSync(config, fetchImpl = globalThis.fetch) {
   // Local copy so acquiring a token never mutates the caller's config object.
   const c = { ...config.corpay };
-  const stats = { bills: 0, credits: 0, payments: 0, settled: 0, skipped: 0, warnings: 0, errors: 0 };
+  const stats = { bills: 0, credits: 0, payments: 0, vendors: 0, settled: 0, skipped: 0, warnings: 0, errors: 0 };
 
   if (!c.token) {
     console.log('Acquiring Corpay token via refresh_token grant...');
