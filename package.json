@@ -1,0 +1,14 @@
+{
+  "name": "corpay-netsuite-sync",
+  "version": "1.0.0",
+  "description": "Maximally simple one-way sync of Bills, Bill Credits and Bill Payments from Corpay One into NetSuite.",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "sync": "node sync.js",
+    "test": "node test.js"
+  },
+  "license": "MIT"
+}
