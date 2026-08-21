@@ -7,6 +7,21 @@ dependencies** (native `fetch`, `node:crypto` for OAuth 1.0a signing).
 It runs as a one-shot: `node sync.js` does one full pass and exits. Schedule it
 with cron / Task Scheduler.
 
+An equivalent **NetSuite-resident variant** (a scheduled SuiteScript Map/Reduce
+script, no external server) lives in [`netsuite/`](netsuite/) — same logic, same
+external ids, interchangeable.
+
+### Documentation
+
+| Document | Contents |
+|---|---|
+| [`docs/ONEPAGER.md`](docs/ONEPAGER.md) | One-page overview + flowchart |
+| [`docs/FLOW.md`](docs/FLOW.md) | Detailed flow diagrams (architecture, one run, per-document decisions) |
+| [`docs/MAPPING.md`](docs/MAPPING.md) | **Operator guide**: mapping accounts and vendors, fixing unmatched ones |
+| [`docs/CORPAY-API.md`](docs/CORPAY-API.md) | Corpay One API reference + the raw OpenAPI specs in [`docs/corpay-api/`](docs/corpay-api/) |
+| [`docs/NETSUITE-API.md`](docs/NETSUITE-API.md) | NetSuite SuiteTalk REST reference, verified field names and this account's real internal ids |
+| [`netsuite/README.md`](netsuite/README.md) | Deployment guide for the NetSuite-resident variant |
+
 ## What it does (three record flows)
 
 On each pass it reads Corpay One expenses and upserts into NetSuite:

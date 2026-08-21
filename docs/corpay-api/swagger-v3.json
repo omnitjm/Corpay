@@ -1,0 +1,1731 @@
+{
+  "openapi": "3.0.4",
+  "info": {
+    "title": "CorpayOne public API v3",
+    "description": "**[https://app.corpayone.com/developers](https://app.corpayone.com/developers)**",
+    "version": "v3"
+  },
+  "paths": {
+    "/external/v3/creditaccounts/team/{teamId}/transaction/{creditAccountTransactionId}": {
+      "get": {
+        "tags": [
+          "CreditAccounts"
+        ],
+        "summary": "Get a credit account transaction.",
+        "description": "Requires any of scopes `cardtransactions.all` or `cardtransactions.read`",
+        "parameters": [
+          {
+            "name": "teamId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "creditAccountTransactionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApiGetCreditAccountTransactionQuery"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json;odata.metadata=minimal;odata.streaming=true": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiCreditAccountTransactionResponse"
+                }
+              },
+              "application/json;odata.metadata=minimal;odata.streaming=false": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiCreditAccountTransactionResponse"
+                }
+              },
+              "application/json;odata.metadata=minimal": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiCreditAccountTransactionResponse"
+                }
+              },
+              "application/json;odata.metadata=full;odata.streaming=true": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiCreditAccountTransactionResponse"
+                }
+              },
+              "application/json;odata.metadata=full;odata.streaming=false": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiCreditAccountTransactionResponse"
+                }
+              },
+              "application/json;odata.metadata=full": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiCreditAccountTransactionResponse"
+                }
+              },
+              "application/json;odata.metadata=none;odata.streaming=true": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiCreditAccountTransactionResponse"
+                }
+              },
+              "application/json;odata.metadata=none;odata.streaming=false": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiCreditAccountTransactionResponse"
+                }
+              },
+              "application/json;odata.metadata=none": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiCreditAccountTransactionResponse"
+                }
+              },
+              "application/json;odata.streaming=true": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiCreditAccountTransactionResponse"
+                }
+              },
+              "application/json;odata.streaming=false": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiCreditAccountTransactionResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiCreditAccountTransactionResponse"
+                }
+              },
+              "application/json;odata.metadata=minimal;odata.streaming=true;IEEE754Compatible=false": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiCreditAccountTransactionResponse"
+                }
+              },
+              "application/json;odata.metadata=minimal;odata.streaming=true;IEEE754Compatible=true": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiCreditAccountTransactionResponse"
+                }
+              },
+              "application/json;odata.metadata=minimal;odata.streaming=false;IEEE754Compatible=false": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiCreditAccountTransactionResponse"
+                }
+              },
+              "application/json;odata.metadata=minimal;odata.streaming=false;IEEE754Compatible=true": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiCreditAccountTransactionResponse"
+                }
+              },
+              "application/json;odata.metadata=minimal;IEEE754Compatible=false": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiCreditAccountTransactionResponse"
+                }
+              },
+              "application/json;odata.metadata=minimal;IEEE754Compatible=true": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiCreditAccountTransactionResponse"
+                }
+              },
+              "application/json;odata.metadata=full;odata.streaming=true;IEEE754Compatible=false": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiCreditAccountTransactionResponse"
+                }
+              },
+              "application/json;odata.metadata=full;odata.streaming=true;IEEE754Compatible=true": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiCreditAccountTransactionResponse"
+                }
+              },
+              "application/json;odata.metadata=full;odata.streaming=false;IEEE754Compatible=false": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiCreditAccountTransactionResponse"
+                }
+              },
+              "application/json;odata.metadata=full;odata.streaming=false;IEEE754Compatible=true": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiCreditAccountTransactionResponse"
+                }
+              },
+              "application/json;odata.metadata=full;IEEE754Compatible=false": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiCreditAccountTransactionResponse"
+                }
+              },
+              "application/json;odata.metadata=full;IEEE754Compatible=true": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiCreditAccountTransactionResponse"
+                }
+              },
+              "application/json;odata.metadata=none;odata.streaming=true;IEEE754Compatible=false": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiCreditAccountTransactionResponse"
+                }
+              },
+              "application/json;odata.metadata=none;odata.streaming=true;IEEE754Compatible=true": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiCreditAccountTransactionResponse"
+                }
+              },
+              "application/json;odata.metadata=none;odata.streaming=false;IEEE754Compatible=true": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiCreditAccountTransactionResponse"
+                }
+              },
+              "application/json;odata.metadata=none;odata.streaming=false;IEEE754Compatible=false": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiCreditAccountTransactionResponse"
+                }
+              },
+              "application/json;odata.metadata=none;IEEE754Compatible=false": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiCreditAccountTransactionResponse"
+                }
+              },
+              "application/json;odata.metadata=none;IEEE754Compatible=true": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiCreditAccountTransactionResponse"
+                }
+              },
+              "application/json;odata.streaming=true;IEEE754Compatible=false": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiCreditAccountTransactionResponse"
+                }
+              },
+              "application/json;odata.streaming=true;IEEE754Compatible=true": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiCreditAccountTransactionResponse"
+                }
+              },
+              "application/json;odata.streaming=false;IEEE754Compatible=false": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiCreditAccountTransactionResponse"
+                }
+              },
+              "application/json;odata.streaming=false;IEEE754Compatible=true": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiCreditAccountTransactionResponse"
+                }
+              },
+              "application/json;IEEE754Compatible=false": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiCreditAccountTransactionResponse"
+                }
+              },
+              "application/json;IEEE754Compatible=true": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiCreditAccountTransactionResponse"
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiCreditAccountTransactionResponse"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiCreditAccountTransactionResponse"
+                }
+              },
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiCreditAccountTransactionResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiCreditAccountTransactionResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/external/v3/creditaccounts/team/{teamId}/payment/{creditAccountPaymentId}": {
+      "get": {
+        "tags": [
+          "CreditAccounts"
+        ],
+        "summary": "Get a specific payment related to a specific credit account",
+        "description": "Requires any of scopes `cardtransactions.all` or `cardtransactions.read`",
+        "parameters": [
+          {
+            "name": "teamId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "creditAccountPaymentId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GetCreditAccountPaymentQuery"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json;odata.metadata=minimal;odata.streaming=true": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreditAccountPaymentResponse"
+                }
+              },
+              "application/json;odata.metadata=minimal;odata.streaming=false": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreditAccountPaymentResponse"
+                }
+              },
+              "application/json;odata.metadata=minimal": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreditAccountPaymentResponse"
+                }
+              },
+              "application/json;odata.metadata=full;odata.streaming=true": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreditAccountPaymentResponse"
+                }
+              },
+              "application/json;odata.metadata=full;odata.streaming=false": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreditAccountPaymentResponse"
+                }
+              },
+              "application/json;odata.metadata=full": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreditAccountPaymentResponse"
+                }
+              },
+              "application/json;odata.metadata=none;odata.streaming=true": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreditAccountPaymentResponse"
+                }
+              },
+              "application/json;odata.metadata=none;odata.streaming=false": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreditAccountPaymentResponse"
+                }
+              },
+              "application/json;odata.metadata=none": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreditAccountPaymentResponse"
+                }
+              },
+              "application/json;odata.streaming=true": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreditAccountPaymentResponse"
+                }
+              },
+              "application/json;odata.streaming=false": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreditAccountPaymentResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreditAccountPaymentResponse"
+                }
+              },
+              "application/json;odata.metadata=minimal;odata.streaming=true;IEEE754Compatible=false": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreditAccountPaymentResponse"
+                }
+              },
+              "application/json;odata.metadata=minimal;odata.streaming=true;IEEE754Compatible=true": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreditAccountPaymentResponse"
+                }
+              },
+              "application/json;odata.metadata=minimal;odata.streaming=false;IEEE754Compatible=false": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreditAccountPaymentResponse"
+                }
+              },
+              "application/json;odata.metadata=minimal;odata.streaming=false;IEEE754Compatible=true": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreditAccountPaymentResponse"
+                }
+              },
+              "application/json;odata.metadata=minimal;IEEE754Compatible=false": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreditAccountPaymentResponse"
+                }
+              },
+              "application/json;odata.metadata=minimal;IEEE754Compatible=true": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreditAccountPaymentResponse"
+                }
+              },
+              "application/json;odata.metadata=full;odata.streaming=true;IEEE754Compatible=false": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreditAccountPaymentResponse"
+                }
+              },
+              "application/json;odata.metadata=full;odata.streaming=true;IEEE754Compatible=true": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreditAccountPaymentResponse"
+                }
+              },
+              "application/json;odata.metadata=full;odata.streaming=false;IEEE754Compatible=false": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreditAccountPaymentResponse"
+                }
+              },
+              "application/json;odata.metadata=full;odata.streaming=false;IEEE754Compatible=true": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreditAccountPaymentResponse"
+                }
+              },
+              "application/json;odata.metadata=full;IEEE754Compatible=false": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreditAccountPaymentResponse"
+                }
+              },
+              "application/json;odata.metadata=full;IEEE754Compatible=true": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreditAccountPaymentResponse"
+                }
+              },
+              "application/json;odata.metadata=none;odata.streaming=true;IEEE754Compatible=false": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreditAccountPaymentResponse"
+                }
+              },
+              "application/json;odata.metadata=none;odata.streaming=true;IEEE754Compatible=true": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreditAccountPaymentResponse"
+                }
+              },
+              "application/json;odata.metadata=none;odata.streaming=false;IEEE754Compatible=true": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreditAccountPaymentResponse"
+                }
+              },
+              "application/json;odata.metadata=none;odata.streaming=false;IEEE754Compatible=false": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreditAccountPaymentResponse"
+                }
+              },
+              "application/json;odata.metadata=none;IEEE754Compatible=false": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreditAccountPaymentResponse"
+                }
+              },
+              "application/json;odata.metadata=none;IEEE754Compatible=true": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreditAccountPaymentResponse"
+                }
+              },
+              "application/json;odata.streaming=true;IEEE754Compatible=false": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreditAccountPaymentResponse"
+                }
+              },
+              "application/json;odata.streaming=true;IEEE754Compatible=true": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreditAccountPaymentResponse"
+                }
+              },
+              "application/json;odata.streaming=false;IEEE754Compatible=false": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreditAccountPaymentResponse"
+                }
+              },
+              "application/json;odata.streaming=false;IEEE754Compatible=true": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreditAccountPaymentResponse"
+                }
+              },
+              "application/json;IEEE754Compatible=false": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreditAccountPaymentResponse"
+                }
+              },
+              "application/json;IEEE754Compatible=true": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreditAccountPaymentResponse"
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreditAccountPaymentResponse"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreditAccountPaymentResponse"
+                }
+              },
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreditAccountPaymentResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreditAccountPaymentResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/external/v3/expenses/{expenseId}": {
+      "get": {
+        "tags": [
+          "Expenses"
+        ],
+        "summary": "View/read an expense",
+        "description": "Scopes: `expenses.all` (optional) or `expenses.read`",
+        "parameters": [
+          {
+            "name": "expenseId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json;odata.metadata=minimal;odata.streaming=true": {
+                "schema": {
+                  "$ref": "#/components/schemas/V3ApiResponseOfExpenseResponse"
+                }
+              },
+              "application/json;odata.metadata=minimal;odata.streaming=false": {
+                "schema": {
+                  "$ref": "#/components/schemas/V3ApiResponseOfExpenseResponse"
+                }
+              },
+              "application/json;odata.metadata=minimal": {
+                "schema": {
+                  "$ref": "#/components/schemas/V3ApiResponseOfExpenseResponse"
+                }
+              },
+              "application/json;odata.metadata=full;odata.streaming=true": {
+                "schema": {
+                  "$ref": "#/components/schemas/V3ApiResponseOfExpenseResponse"
+                }
+              },
+              "application/json;odata.metadata=full;odata.streaming=false": {
+                "schema": {
+                  "$ref": "#/components/schemas/V3ApiResponseOfExpenseResponse"
+                }
+              },
+              "application/json;odata.metadata=full": {
+                "schema": {
+                  "$ref": "#/components/schemas/V3ApiResponseOfExpenseResponse"
+                }
+              },
+              "application/json;odata.metadata=none;odata.streaming=true": {
+                "schema": {
+                  "$ref": "#/components/schemas/V3ApiResponseOfExpenseResponse"
+                }
+              },
+              "application/json;odata.metadata=none;odata.streaming=false": {
+                "schema": {
+                  "$ref": "#/components/schemas/V3ApiResponseOfExpenseResponse"
+                }
+              },
+              "application/json;odata.metadata=none": {
+                "schema": {
+                  "$ref": "#/components/schemas/V3ApiResponseOfExpenseResponse"
+                }
+              },
+              "application/json;odata.streaming=true": {
+                "schema": {
+                  "$ref": "#/components/schemas/V3ApiResponseOfExpenseResponse"
+                }
+              },
+              "application/json;odata.streaming=false": {
+                "schema": {
+                  "$ref": "#/components/schemas/V3ApiResponseOfExpenseResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/V3ApiResponseOfExpenseResponse"
+                }
+              },
+              "application/json;odata.metadata=minimal;odata.streaming=true;IEEE754Compatible=false": {
+                "schema": {
+                  "$ref": "#/components/schemas/V3ApiResponseOfExpenseResponse"
+                }
+              },
+              "application/json;odata.metadata=minimal;odata.streaming=true;IEEE754Compatible=true": {
+                "schema": {
+                  "$ref": "#/components/schemas/V3ApiResponseOfExpenseResponse"
+                }
+              },
+              "application/json;odata.metadata=minimal;odata.streaming=false;IEEE754Compatible=false": {
+                "schema": {
+                  "$ref": "#/components/schemas/V3ApiResponseOfExpenseResponse"
+                }
+              },
+              "application/json;odata.metadata=minimal;odata.streaming=false;IEEE754Compatible=true": {
+                "schema": {
+                  "$ref": "#/components/schemas/V3ApiResponseOfExpenseResponse"
+                }
+              },
+              "application/json;odata.metadata=minimal;IEEE754Compatible=false": {
+                "schema": {
+                  "$ref": "#/components/schemas/V3ApiResponseOfExpenseResponse"
+                }
+              },
+              "application/json;odata.metadata=minimal;IEEE754Compatible=true": {
+                "schema": {
+                  "$ref": "#/components/schemas/V3ApiResponseOfExpenseResponse"
+                }
+              },
+              "application/json;odata.metadata=full;odata.streaming=true;IEEE754Compatible=false": {
+                "schema": {
+                  "$ref": "#/components/schemas/V3ApiResponseOfExpenseResponse"
+                }
+              },
+              "application/json;odata.metadata=full;odata.streaming=true;IEEE754Compatible=true": {
+                "schema": {
+                  "$ref": "#/components/schemas/V3ApiResponseOfExpenseResponse"
+                }
+              },
+              "application/json;odata.metadata=full;odata.streaming=false;IEEE754Compatible=false": {
+                "schema": {
+                  "$ref": "#/components/schemas/V3ApiResponseOfExpenseResponse"
+                }
+              },
+              "application/json;odata.metadata=full;odata.streaming=false;IEEE754Compatible=true": {
+                "schema": {
+                  "$ref": "#/components/schemas/V3ApiResponseOfExpenseResponse"
+                }
+              },
+              "application/json;odata.metadata=full;IEEE754Compatible=false": {
+                "schema": {
+                  "$ref": "#/components/schemas/V3ApiResponseOfExpenseResponse"
+                }
+              },
+              "application/json;odata.metadata=full;IEEE754Compatible=true": {
+                "schema": {
+                  "$ref": "#/components/schemas/V3ApiResponseOfExpenseResponse"
+                }
+              },
+              "application/json;odata.metadata=none;odata.streaming=true;IEEE754Compatible=false": {
+                "schema": {
+                  "$ref": "#/components/schemas/V3ApiResponseOfExpenseResponse"
+                }
+              },
+              "application/json;odata.metadata=none;odata.streaming=true;IEEE754Compatible=true": {
+                "schema": {
+                  "$ref": "#/components/schemas/V3ApiResponseOfExpenseResponse"
+                }
+              },
+              "application/json;odata.metadata=none;odata.streaming=false;IEEE754Compatible=true": {
+                "schema": {
+                  "$ref": "#/components/schemas/V3ApiResponseOfExpenseResponse"
+                }
+              },
+              "application/json;odata.metadata=none;odata.streaming=false;IEEE754Compatible=false": {
+                "schema": {
+                  "$ref": "#/components/schemas/V3ApiResponseOfExpenseResponse"
+                }
+              },
+              "application/json;odata.metadata=none;IEEE754Compatible=false": {
+                "schema": {
+                  "$ref": "#/components/schemas/V3ApiResponseOfExpenseResponse"
+                }
+              },
+              "application/json;odata.metadata=none;IEEE754Compatible=true": {
+                "schema": {
+                  "$ref": "#/components/schemas/V3ApiResponseOfExpenseResponse"
+                }
+              },
+              "application/json;odata.streaming=true;IEEE754Compatible=false": {
+                "schema": {
+                  "$ref": "#/components/schemas/V3ApiResponseOfExpenseResponse"
+                }
+              },
+              "application/json;odata.streaming=true;IEEE754Compatible=true": {
+                "schema": {
+                  "$ref": "#/components/schemas/V3ApiResponseOfExpenseResponse"
+                }
+              },
+              "application/json;odata.streaming=false;IEEE754Compatible=false": {
+                "schema": {
+                  "$ref": "#/components/schemas/V3ApiResponseOfExpenseResponse"
+                }
+              },
+              "application/json;odata.streaming=false;IEEE754Compatible=true": {
+                "schema": {
+                  "$ref": "#/components/schemas/V3ApiResponseOfExpenseResponse"
+                }
+              },
+              "application/json;IEEE754Compatible=false": {
+                "schema": {
+                  "$ref": "#/components/schemas/V3ApiResponseOfExpenseResponse"
+                }
+              },
+              "application/json;IEEE754Compatible=true": {
+                "schema": {
+                  "$ref": "#/components/schemas/V3ApiResponseOfExpenseResponse"
+                }
+              },
+              "application/xml": {
+                "schema": {
+                  "$ref": "#/components/schemas/V3ApiResponseOfExpenseResponse"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/V3ApiResponseOfExpenseResponse"
+                }
+              },
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/V3ApiResponseOfExpenseResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/V3ApiResponseOfExpenseResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ApiCreditAccountTransactionCategory": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "readOnly": true
+          },
+          "name": {
+            "type": "string",
+            "nullable": true,
+            "readOnly": true
+          },
+          "number": {
+            "type": "string",
+            "nullable": true,
+            "readOnly": true
+          },
+          "externalId": {
+            "type": "string",
+            "nullable": true,
+            "readOnly": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "ApiCreditAccountTransactionDepartment": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "readOnly": true
+          },
+          "name": {
+            "type": "string",
+            "nullable": true,
+            "readOnly": true
+          },
+          "externalId": {
+            "type": "string",
+            "nullable": true,
+            "readOnly": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "ApiCreditAccountTransactionItem": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "description": "Type representing\nhashed integer value."
+          },
+          "name": {
+            "type": "string",
+            "nullable": true
+          },
+          "externalId": {
+            "type": "string",
+            "nullable": true
+          },
+          "quantity": {
+            "type": "number",
+            "format": "double"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ApiCreditAccountTransactionLabel": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "readOnly": true
+          },
+          "parentId": {
+            "description": "Type representing\nhashed integer value.",
+            "readOnly": true
+          },
+          "listId": {
+            "type": "string",
+            "readOnly": true
+          },
+          "value": {
+            "type": "string",
+            "nullable": true,
+            "readOnly": true
+          },
+          "externalId": {
+            "type": "string",
+            "nullable": true,
+            "readOnly": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "ApiCreditAccountTransactionResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "creditAccountId": {
+            "type": "string"
+          },
+          "vendorId": {
+            "type": "string",
+            "nullable": true
+          },
+          "status": {
+            "$ref": "#/components/schemas/CreditAccountTransactionStatus"
+          },
+          "attachmentUrls": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "nullable": true
+          },
+          "note": {
+            "type": "string",
+            "nullable": true
+          },
+          "postal": {
+            "type": "string",
+            "nullable": true
+          },
+          "stateProvince": {
+            "type": "string",
+            "nullable": true
+          },
+          "city": {
+            "type": "string",
+            "nullable": true
+          },
+          "addressLine1": {
+            "type": "string",
+            "nullable": true
+          },
+          "postedDate": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "transactionDate": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "merchantName": {
+            "type": "string",
+            "nullable": true
+          },
+          "description": {
+            "type": "string",
+            "nullable": true
+          },
+          "amount": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "category": {
+            "$ref": "#/components/schemas/ApiCreditAccountTransactionCategory"
+          },
+          "department": {
+            "$ref": "#/components/schemas/ApiCreditAccountTransactionDepartment"
+          },
+          "labels": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ApiCreditAccountTransactionLabel"
+            },
+            "nullable": true
+          },
+          "item": {
+            "$ref": "#/components/schemas/ApiCreditAccountTransactionItem"
+          },
+          "externalIdentifier": {
+            "type": "string",
+            "nullable": true
+          },
+          "cardId": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "ApiGetCreditAccountTransactionQuery": {
+        "required": [
+          "creditAccountId",
+          "creditAccountTransactionId"
+        ],
+        "type": "object",
+        "properties": {
+          "creditAccountId": {
+            "type": "string"
+          },
+          "creditAccountTransactionId": {
+            "type": "string"
+          },
+          "teamId": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "AttachmentFullResponse": {
+        "required": [
+          "attachmentParentId",
+          "created",
+          "id",
+          "isOriginal",
+          "url"
+        ],
+        "type": "object",
+        "properties": {
+          "id": {
+            "description": "Type representing\nhashed integer value."
+          },
+          "attachmentParentId": {
+            "nullable": true
+          },
+          "url": {
+            "type": "string",
+            "nullable": true
+          },
+          "created": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "isOriginal": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "BillStatus": {
+        "enum": [
+          "Pending",
+          "Booked",
+          "Paid",
+          "Cancelled",
+          "Awaiting",
+          "Paused",
+          "Duplicate",
+          "Refunded",
+          "Initialized"
+        ],
+        "type": "string"
+      },
+      "CategoryFullResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "readOnly": true
+          },
+          "name": {
+            "type": "string",
+            "nullable": true,
+            "readOnly": true
+          },
+          "number": {
+            "type": "string",
+            "nullable": true,
+            "readOnly": true
+          },
+          "externalId": {
+            "type": "string",
+            "nullable": true,
+            "readOnly": true
+          },
+          "parent": {
+            "$ref": "#/components/schemas/ExpensesDefaultResponseDataExpenseCategoryParentShallow"
+          }
+        },
+        "additionalProperties": false
+      },
+      "CreditAccountPaymentResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "creditAccountId": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/CreditAccountPaymentStatus"
+          },
+          "amount": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "reference": {
+            "type": "string",
+            "nullable": true
+          },
+          "initiationDate": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "paymentDate": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "paymentMethodId": {
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "CreditAccountPaymentStatus": {
+        "enum": [
+          "None",
+          "Draft",
+          "Deleted",
+          "Scheduled",
+          "Cancelled",
+          "Initiated",
+          "InitiateFailed",
+          "Paid",
+          "Failed",
+          "Received"
+        ],
+        "type": "string"
+      },
+      "CreditAccountTransactionStatus": {
+        "enum": [
+          "Unknown",
+          "Authorized",
+          "Posted",
+          "Declined",
+          "Credit",
+          "Reversed"
+        ],
+        "type": "string"
+      },
+      "CreditorShallowResponse": {
+        "required": [
+          "id"
+        ],
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "DepartmentResponse": {
+        "type": "object",
+        "properties": {
+          "externalId": {
+            "type": "string",
+            "nullable": true
+          },
+          "id": {
+            "type": "string",
+            "nullable": true
+          },
+          "name": {
+            "type": "string",
+            "nullable": true
+          },
+          "color": {
+            "type": "string",
+            "nullable": true
+          },
+          "created": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "excludedCategoryIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "ExpenseAmountLinesResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "nullable": true
+          },
+          "category": {
+            "$ref": "#/components/schemas/CategoryFullResponse"
+          },
+          "departmentId": {
+            "type": "string",
+            "nullable": true
+          },
+          "department": {
+            "$ref": "#/components/schemas/DepartmentResponse"
+          },
+          "created": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "amount": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "note": {
+            "type": "string",
+            "nullable": true
+          },
+          "labels": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LabelFullResponse"
+            },
+            "nullable": true
+          },
+          "item": {
+            "$ref": "#/components/schemas/ItemResponse"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ExpenseFriendlyStatus": {
+        "enum": [
+          "Pending",
+          "Booked",
+          "Paid",
+          "Cancelled",
+          "Awaiting",
+          "Paused",
+          "Duplicate",
+          "Refunded",
+          "Initiated",
+          "CheckIssued",
+          "VccIssued",
+          "Refunding",
+          "MarkedAsPaid",
+          "Scheduled",
+          "Processing",
+          "OnHold"
+        ],
+        "type": "string"
+      },
+      "ExpenseResponse": {
+        "required": [
+          "amount",
+          "attachments",
+          "category",
+          "creditor",
+          "currency",
+          "declineReason",
+          "departments",
+          "dueDate",
+          "friendlyStatus",
+          "fx",
+          "id",
+          "isPayable",
+          "issueDate",
+          "item",
+          "labels",
+          "lines",
+          "notes",
+          "number",
+          "originalAmount",
+          "originalCurrency",
+          "originalDueDate",
+          "owner",
+          "paymentDate",
+          "paymentMethod",
+          "reference",
+          "referenceDate",
+          "ripePaymentId",
+          "state",
+          "type",
+          "vendor"
+        ],
+        "type": "object",
+        "properties": {
+          "id": {
+            "description": "Type representing\nhashed integer value."
+          },
+          "type": {
+            "type": "string",
+            "nullable": true
+          },
+          "reference": {
+            "type": "string",
+            "nullable": true
+          },
+          "number": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "amount": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "originalAmount": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true
+          },
+          "currency": {
+            "type": "string",
+            "nullable": true
+          },
+          "originalCurrency": {
+            "type": "string",
+            "nullable": true
+          },
+          "state": {
+            "$ref": "#/components/schemas/BillStatus"
+          },
+          "referenceDate": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "issueDate": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "dueDate": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "originalDueDate": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "isDueDateOverwritten": {
+            "type": "boolean",
+            "nullable": true,
+            "readOnly": true
+          },
+          "initializedDate": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "readOnly": true
+          },
+          "paymentDate": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "ripePaymentId": {
+            "nullable": true
+          },
+          "attachments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AttachmentFullResponse"
+            },
+            "nullable": true
+          },
+          "notes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NoteFullResponse"
+            },
+            "nullable": true
+          },
+          "paymentMethod": {
+            "$ref": "#/components/schemas/PaymentMethodShallowResponse"
+          },
+          "category": {
+            "$ref": "#/components/schemas/CategoryFullResponse"
+          },
+          "item": {
+            "$ref": "#/components/schemas/ItemResponse"
+          },
+          "departments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DepartmentResponse"
+            },
+            "nullable": true
+          },
+          "declineReason": {
+            "type": "string",
+            "nullable": true
+          },
+          "isPayable": {
+            "type": "boolean"
+          },
+          "fx": {
+            "$ref": "#/components/schemas/FxResponse"
+          },
+          "labels": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LabelFullResponse"
+            },
+            "nullable": true
+          },
+          "friendlyStatus": {
+            "$ref": "#/components/schemas/ExpenseFriendlyStatus"
+          },
+          "creditor": {
+            "$ref": "#/components/schemas/CreditorShallowResponse"
+          },
+          "owner": {
+            "$ref": "#/components/schemas/OwnerShallowResponse"
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ExpenseAmountLinesResponse"
+            },
+            "nullable": true
+          },
+          "vendor": {
+            "$ref": "#/components/schemas/VendorShallowResponse"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ExpensesDefaultResponseDataExpenseCategoryParentShallow": {
+        "required": [
+          "id"
+        ],
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ExpensesDefaultResponseDataExpenseOwnerTeamShallow": {
+        "required": [
+          "id"
+        ],
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ExpensesDefaultResponseDataExpenseOwnerUserShallow": {
+        "required": [
+          "id"
+        ],
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "FxResponse": {
+        "type": "object",
+        "properties": {
+          "homeAmount": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "foreignAmount": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "homeCurrency": {
+            "type": "string",
+            "nullable": true
+          },
+          "foreignCurrency": {
+            "type": "string",
+            "nullable": true
+          },
+          "isForeignFixedCurrency": {
+            "type": "boolean"
+          },
+          "exchangeRate": {
+            "type": "number",
+            "format": "double",
+            "nullable": true
+          },
+          "paymentInstructionType": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "GetCreditAccountPaymentQuery": {
+        "required": [
+          "creditAccountId",
+          "creditAccountPaymentId"
+        ],
+        "type": "object",
+        "properties": {
+          "creditAccountId": {
+            "type": "string"
+          },
+          "creditAccountPaymentId": {
+            "type": "string"
+          },
+          "teamId": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ItemResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "nullable": true,
+            "readOnly": true
+          },
+          "name": {
+            "type": "string",
+            "nullable": true,
+            "readOnly": true
+          },
+          "externalId": {
+            "type": "string",
+            "nullable": true,
+            "readOnly": true
+          },
+          "quantity": {
+            "type": "number",
+            "format": "double"
+          }
+        },
+        "additionalProperties": false
+      },
+      "LabelFullResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "nullable": true,
+            "readOnly": true
+          },
+          "value": {
+            "type": "string",
+            "nullable": true,
+            "readOnly": true
+          },
+          "parentId": {
+            "type": "string",
+            "nullable": true,
+            "readOnly": true
+          },
+          "listId": {
+            "type": "string",
+            "nullable": true,
+            "readOnly": true
+          },
+          "externalId": {
+            "type": "string",
+            "nullable": true,
+            "readOnly": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "NoteFullResponse": {
+        "required": [
+          "created",
+          "id",
+          "value"
+        ],
+        "type": "object",
+        "properties": {
+          "id": {
+            "description": "Type representing\nhashed integer value."
+          },
+          "value": {
+            "type": "string",
+            "nullable": true
+          },
+          "created": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "additionalProperties": false
+      },
+      "OwnerShallowResponse": {
+        "required": [
+          "team",
+          "user"
+        ],
+        "type": "object",
+        "properties": {
+          "user": {
+            "$ref": "#/components/schemas/ExpensesDefaultResponseDataExpenseOwnerUserShallow"
+          },
+          "team": {
+            "$ref": "#/components/schemas/ExpensesDefaultResponseDataExpenseOwnerTeamShallow"
+          }
+        },
+        "additionalProperties": false
+      },
+      "PaymentMethodShallowResponse": {
+        "required": [
+          "id",
+          "type"
+        ],
+        "type": "object",
+        "properties": {
+          "id": {
+            "description": "Type representing\nhashed integer value."
+          },
+          "type": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "V3ApiResponseOfExpenseResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/ExpenseResponse"
+          }
+        },
+        "additionalProperties": false,
+        "description": "Standard V3 response model.\nAllows us to add pagination\nand other metadata properties\nto response without breaking\nDTO serialization."
+      },
+      "VendorShallowResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "nullable": true,
+            "readOnly": true
+          },
+          "name": {
+            "type": "string",
+            "nullable": true,
+            "readOnly": true
+          },
+          "externalId": {
+            "type": "string",
+            "nullable": true,
+            "readOnly": true
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "securitySchemes": {
+      "oauth2": {
+        "type": "oauth2",
+        "description": "Use **[https://app.corpayone.com/developers](https://app.corpayone.com/developers)** to create a new client",
+        "flows": {
+          "authorizationCode": {
+            "authorizationUrl": "https://identity.corpayone.com/connect/authorize",
+            "tokenUrl": "https://identity.corpayone.com/connect/token",
+            "scopes": {
+              "departments.all": "",
+              "departments.create": "",
+              "departments.delete": "",
+              "departments.list": "",
+              "departments.read": "",
+              "expenses.all": "",
+              "expenses.approvers.read": "",
+              "expenses.create": "",
+              "expenses.delete": "",
+              "expenses.list": "",
+              "expenses.read": "",
+              "payments.all": "",
+              "payments.methods.all": "",
+              "payments.methods.create": "",
+              "payments.methods.delete": "",
+              "payments.methods.list": "",
+              "payments.methods.read": "",
+              "payments.methods.update": "",
+              "teams.all": "",
+              "teams.categories.all": "",
+              "teams.categories.create": "",
+              "teams.categories.delete": "",
+              "teams.categories.list": "",
+              "teams.categories.read": "",
+              "teams.categories.update": "",
+              "teams.read": "",
+              "teams.update": "",
+              "teams.create": "",
+              "teams.delete": "",
+              "teams.list": "",
+              "teams.lists.all": "",
+              "teams.lists.read": "",
+              "teams.lists.delete": "",
+              "teams.lists.update": "",
+              "teams.members.all": "",
+              "teams.members.create": "",
+              "teams.members.delete": "",
+              "teams.members.list": "",
+              "teams.members.read": "",
+              "teams.modules.list": "",
+              "teams.vendors.all": "",
+              "teams.vendors.create": "",
+              "users.all": "",
+              "users.create": "",
+              "users.delete": "",
+              "users.read": "",
+              "users.update": "",
+              "webhooks.all": "",
+              "webhooks.create": "",
+              "webhooks.delete": "",
+              "webhooks.read": "",
+              "webhooks.update": "",
+              "webhooks.sync.log.update": "",
+              "cardtransactions.all": "",
+              "cardtransactions.read": "",
+              "cardtransactions.list": "",
+              "cardtransactions.update": "",
+              "items.read": "",
+              "items.write": ""
+            }
+          }
+        }
+      },
+      "Bearer": {
+        "type": "http",
+        "description": "JWT Authorization header using the Bearer scheme. Example: 'Authorization: Bearer {token}'",
+        "scheme": "bearer"
+      }
+    }
+  },
+  "security": [
+    {
+      "oauth2": [
+        "departments.all",
+        "departments.create",
+        "departments.delete",
+        "departments.list",
+        "departments.read",
+        "expenses.all",
+        "expenses.approvers.read",
+        "expenses.create",
+        "expenses.delete",
+        "expenses.list",
+        "expenses.read",
+        "payments.all",
+        "payments.methods.all",
+        "payments.methods.create",
+        "payments.methods.delete",
+        "payments.methods.list",
+        "payments.methods.read",
+        "payments.methods.update",
+        "teams.all",
+        "teams.categories.all",
+        "teams.categories.create",
+        "teams.categories.delete",
+        "teams.categories.list",
+        "teams.categories.read",
+        "teams.categories.update",
+        "teams.read",
+        "teams.update",
+        "teams.create",
+        "teams.delete",
+        "teams.list",
+        "teams.lists.all",
+        "teams.lists.read",
+        "teams.lists.delete",
+        "teams.lists.update",
+        "teams.members.all",
+        "teams.members.create",
+        "teams.members.delete",
+        "teams.members.list",
+        "teams.members.read",
+        "teams.modules.list",
+        "teams.vendors.all",
+        "teams.vendors.create",
+        "users.all",
+        "users.create",
+        "users.delete",
+        "users.read",
+        "users.update",
+        "webhooks.all",
+        "webhooks.create",
+        "webhooks.delete",
+        "webhooks.read",
+        "webhooks.update",
+        "webhooks.sync.log.update",
+        "cardtransactions.all",
+        "cardtransactions.read",
+        "cardtransactions.list",
+        "cardtransactions.update",
+        "items.read",
+        "items.write"
+      ],
+      "Bearer": [ ]
+    }
+  ],
+  "tags": [
+    {
+      "name": "CreditAccounts"
+    },
+    {
+      "name": "Expenses"
+    }
+  ]
+}
